@@ -11,6 +11,8 @@ DEBUG: bool = true
 Block_ID :: distinct u64
 Page_ID :: u64
 
+CURRENT_PANE: ^Pane
+
 BlockType :: enum {
 	Text,
 	Todo,
@@ -63,7 +65,11 @@ BlockStore :: struct {
 	next_id:    Block_ID,
 }
 
-Pane :: struct {}
+Pane :: struct {
+	position: int,
+	line_num: int,
+	blocks:   ^BlockStore,
+}
 
 // States
 Window_State :: struct {
@@ -83,6 +89,10 @@ Global_State :: struct {
 
 UI_State :: struct {
 	side_bar_width: i32,
+}
+
+Cursor_State :: struct {
+	line: i32,
 }
 
 // Themes
@@ -130,7 +140,7 @@ get_page :: proc(store: ^Page_Store, id: Page_ID) -> ^Page {
 	return nil
 }
 
-load_page :: proc(page_id: Page_ID) {
+load_page :: proc(state: ^Global_State, page_id: Page_ID) {
 	// specific_arena is a block of memory just for this operation
 	arena: mem.Arena
 	mem.arena_init(&arena, make([]byte, 16 * mem.Megabyte))
@@ -141,8 +151,8 @@ load_page :: proc(page_id: Page_ID) {
 
 	// Everything allocated here (arrays, strings) lives in the arena
 	// No need to manually free individual objects!
-	//blocks := load_blocks_from_db(page_id)
-	//render_page(blocks)
+	blocks := state.store.pages[page_id].store
+	CURRENT_PANE^.blocks = blocks
 }
 
 init_store :: proc() -> ^Page_Store {
@@ -306,7 +316,7 @@ remove_id_from_array :: proc(array: ^[dynamic]Block_ID, target: Block_ID) {
 	}
 }
 
-test :: proc(page_store: ^Page_Store) {
+test :: proc(page_store: ^Page_Store, state: ^Global_State) {
 	fmt.println("running Tests")
 
 	test_page_id := create_page(page_store)
@@ -334,16 +344,8 @@ test :: proc(page_store: ^Page_Store) {
 		fmt.printfln("Block_ID: %v, Content: %v", block.id, block.data)
 	}
 
-	// Error Check
-	err1 := delete_block(test_page.store, test_block_1)
-	err2 := delete_block(test_page.store, test_block_2)
-	err3 := delete_block(test_page.store, test_block_3)
-
-	if !err1 || !err2 || !err3 {
-		fmt.println("Deletion failed")
-	} else {
-		fmt.println("Deletion Success")
-	}
+	// Load Page
+	load_page(state, test_page_id)
 
 	// Count after deletion
 	fmt.printfln("Post-count: %d", len(test_page.store.root_order))
@@ -363,21 +365,63 @@ handle_input :: proc(state: ^Global_State) {
 	last_keypress = rl.GetKeyPressed()
 }
 
-
 render_ui :: proc(state: ^Global_State) {
 	mouse_pos := rl.GetMousePosition()
 	draw_pos: i32 = 0
 	window_height := rl.GetScreenHeight()
 	window_width := rl.GetScreenWidth()
-	pane_len := i32(len(state.window.panes))
-	if pane_len <= 1 {
-		rl.DrawRectangle(draw_pos, 0, window_width, window_height, Gruvbox.panel)
-	} else {
-		for pane in state.window.panes {
-			rl.DrawRectangle(draw_pos, 0, window_width / pane_len, window_height, Gruvbox.panel)
-			rl.DrawLine(draw_pos, 0, draw_pos, window_height, Gruvbox.accent)
+
+	pane_len := i32(max(len(state.window.panes), 1))
+	for pane in state.window.panes {
+		rl.DrawRectangle(draw_pos, 0, window_width / pane_len, window_height, Gruvbox.panel)
+		rl.DrawLine(draw_pos, 0, draw_pos, window_height, Gruvbox.accent)
+			if pane.blocks != nil && len(pane.blocks.root_order) > 0 {
+				for block_id in pane.blocks.root_order {
+					block := pane.blocks.blocks[block_id]
+					switch _ in block.data {
+
+					case BlockText:
+						if data_ptr, ok := &block.data.(BlockText); ok {
+							rl.DrawText(
+								strings.clone_to_cstring(data_ptr.content),
+								draw_pos,
+								20,
+								24,
+								Gruvbox.text,
+							)
+
+						}
+
+					case BlockHeading:
+						if data_ptr, ok := &block.data.(BlockHeading); ok {
+							rl.DrawText(
+								strings.clone_to_cstring(data_ptr.content),
+								draw_pos,
+								20,
+								24,
+								Gruvbox.text,
+							)
+
+						}
+
+					case BlockTodo:
+						if data_ptr, ok := &block.data.(BlockTodo); ok {
+							rl.DrawText(
+								strings.clone_to_cstring(data_ptr.content),
+								draw_pos,
+								20,
+								24,
+								Gruvbox.text,
+							)
+						}
+
+					case:
+						return
+					}
+				}
+			}
 			draw_pos += window_width / pane_len
-		}
+
 	}
 	draw_pos = 0
 	if state.debug {rl.DrawFPS(0, 0)}
@@ -392,9 +436,6 @@ main :: proc() {
 		panes      = make([dynamic]Pane),
 	}
 
-	pane := Pane{}
-
-	append(&window.panes, pane)
 
 	rl.SetConfigFlags({.WINDOW_RESIZABLE})
 	rl.InitWindow(window.size_x, window.size_y, "Synapse - Note Taker")
@@ -408,7 +449,10 @@ main :: proc() {
 		window = window,
 	}
 
-	test(&state.store)
+	pane := Pane{}
+	append(&state.window.panes, pane)
+	CURRENT_PANE = &state.window.panes[len(state.window.panes) - 1]
+	test(&state.store, &state)
 
 	font := rl.LoadFontEx("things/fonts/JetBrainsMono-Regular.ttf", 32, nil, 0)
 
