@@ -3,6 +3,10 @@ package main
 import "core:fmt"
 import "core:mem"
 import "core:strings"
+import rl "vendor:raylib"
+
+// Flags
+DEBUG: bool = true
 // Data Types
 Block_ID :: distinct u64
 Page_ID :: u64
@@ -57,6 +61,49 @@ BlockStore :: struct {
 	blocks:     map[Block_ID]Block,
 	root_order: [dynamic]Block_ID,
 	next_id:    Block_ID,
+}
+
+Pane :: struct {
+	width: i32,
+}
+
+// States
+Window_State :: struct {
+	size_x:     i32,
+	size_y:     i32,
+	target_fps: i32,
+	panes:      [dynamic]Pane,
+}
+
+Global_State :: struct {
+	running: bool,
+	debug:   bool,
+	store:   Page_Store,
+	window:  Window_State,
+	ui:      UI_State,
+}
+
+UI_State :: struct {
+	side_bar_width: i32,
+}
+
+// Themes
+Theme :: struct {
+	bg:        rl.Color,
+	panel:     rl.Color,
+	text:      rl.Color,
+	text_dim:  rl.Color,
+	selection: rl.Color,
+	accent:    rl.Color,
+}
+
+Gruvbox :: Theme {
+	bg        = {29, 32, 33, 255}, // #1d2021
+	panel     = {40, 40, 40, 255}, // #282828
+	text      = {235, 219, 178, 255}, // #ebdbb2
+	text_dim  = {168, 153, 132, 255}, // #a89984
+	selection = {80, 73, 69, 255}, // #504945
+	accent    = {184, 187, 38, 255}, // #b8bb26 (Green)
 }
 
 create_page :: proc(page_store: ^Page_Store) -> Page_ID {
@@ -186,7 +233,7 @@ delete_block :: proc(store: ^BlockStore, block_id: Block_ID) -> bool {
 		} else {
 			// Fallback: Parent missing, move to root
 			target_list = &store.root_order
-			new_parent_id = 0 // <--- RESET PARENT TO 0
+			new_parent_id = 0
 		}
 	}
 
@@ -224,15 +271,11 @@ delete_block :: proc(store: ^BlockStore, block_id: Block_ID) -> bool {
 }
 
 update_content :: proc(store: ^BlockStore, id: Block_ID, new_text: string) {
-	// 1. Get the pointer to the block
 	if block, ok := &store.blocks[id]; ok {
 
-		// 2. Switch on the VALUE (block.data) to check the type.
-		// This is the standard way to do a type switch.
 		switch _ in block.data {
 
 		case BlockText:
-			// 3. Get the MUTABLE POINTER to the specific data variant
 			if data_ptr, ok := &block.data.(BlockText); ok {
 				delete(data_ptr.content)
 				data_ptr.content = strings.clone(new_text)
@@ -259,7 +302,6 @@ update_content :: proc(store: ^BlockStore, id: Block_ID, new_text: string) {
 remove_id_from_array :: proc(array: ^[dynamic]Block_ID, target: Block_ID) {
 	for id, index in array {
 		if id == target {
-			// ordered_remove is slower than unordered, but essential for UI lists
 			ordered_remove(array, index)
 			break
 		}
@@ -267,7 +309,7 @@ remove_id_from_array :: proc(array: ^[dynamic]Block_ID, target: Block_ID) {
 }
 
 test :: proc(page_store: ^Page_Store) {
-	fmt.println("Running Tests")
+	fmt.println("running Tests")
 
 	test_page_id := create_page(page_store)
 
@@ -309,7 +351,85 @@ test :: proc(page_store: ^Page_Store) {
 	fmt.printfln("Post-count: %d", len(test_page.store.root_order))
 }
 
+last_keypress: rl.KeyboardKey = nil
+handle_input :: proc(state: ^Global_State) {
+	if rl.IsKeyDown(.LEFT_CONTROL) && rl.IsKeyDown(.C) {
+		state.running = false //TODO Remove after adding a button
+	}
+	if rl.GetKeyPressed() == rl.KeyboardKey.SPACE && last_keypress != .SPACE {
+		fmt.println("New Pane")
+		new_pane := Pane {
+			width = 150,
+		}
+
+		append(&state.window.panes, new_pane)
+	}
+	last_keypress = rl.GetKeyPressed()
+}
+
+
+render_ui :: proc(state: ^Global_State) {
+	mouse_pos := rl.GetMousePosition()
+	draw_pos: i32 = 0
+	window_height := rl.GetScreenHeight()
+	window_width := rl.GetScreenWidth()
+	if len(state.window.panes) <= 1 {
+		rl.DrawRectangle(draw_pos, 0, window_width, window_height, Gruvbox.panel)
+	} else {
+		for pane in state.window.panes {
+			rl.DrawRectangle(draw_pos, 0, pane.width, window_height, Gruvbox.panel)
+			rl.DrawLine(
+				pane.width + draw_pos,
+				0,
+				pane.width + draw_pos,
+				window_height,
+				Gruvbox.accent,
+			)
+			draw_pos += pane.width
+		}
+	}
+	draw_pos = 0
+	if state.debug {rl.DrawFPS(0, 0)}
+}
+
 main :: proc() {
-	store := init_store()
-	test(store)
+
+	window := Window_State {
+		size_x     = 1280,
+		size_y     = 720,
+		target_fps = 60,
+		panes      = make([dynamic]Pane),
+	}
+
+	pane := Pane {
+		width = 350,
+	}
+
+	append(&window.panes, pane)
+
+	rl.SetConfigFlags({.WINDOW_RESIZABLE})
+	rl.InitWindow(window.size_x, window.size_y, "Synapse - Note Taker")
+	rl.SetTargetFPS(window.target_fps)
+
+	state := Global_State {
+		running = true,
+		store = init_store()^,
+		debug = DEBUG,
+		ui = {side_bar_width = 128},
+		window = window,
+	}
+
+	test(&state.store)
+
+	font := rl.LoadFontEx("things/fonts/JetBrainsMono-Regular.ttf", 32, nil, 0)
+
+	for !rl.WindowShouldClose() && state.running {
+		handle_input(&state)
+		rl.BeginDrawing()
+		rl.ClearBackground(Gruvbox.bg)
+		render_ui(&state)
+		rl.EndDrawing()
+	}
+
+	rl.CloseWindow()
 }
