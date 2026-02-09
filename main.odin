@@ -63,9 +63,7 @@ BlockStore :: struct {
 	next_id:    Block_ID,
 }
 
-Pane :: struct {
-	width: i32,
-}
+Pane :: struct {}
 
 // States
 Window_State :: struct {
@@ -358,9 +356,7 @@ handle_input :: proc(state: ^Global_State) {
 	}
 	if rl.GetKeyPressed() == rl.KeyboardKey.SPACE && last_keypress != .SPACE {
 		fmt.println("New Pane")
-		new_pane := Pane {
-			width = 150,
-		}
+		new_pane := Pane{}
 
 		append(&state.window.panes, new_pane)
 	}
@@ -373,19 +369,14 @@ render_ui :: proc(state: ^Global_State) {
 	draw_pos: i32 = 0
 	window_height := rl.GetScreenHeight()
 	window_width := rl.GetScreenWidth()
-	if len(state.window.panes) <= 1 {
+	pane_len := i32(len(state.window.panes))
+	if pane_len <= 1 {
 		rl.DrawRectangle(draw_pos, 0, window_width, window_height, Gruvbox.panel)
 	} else {
 		for pane in state.window.panes {
-			rl.DrawRectangle(draw_pos, 0, pane.width, window_height, Gruvbox.panel)
-			rl.DrawLine(
-				pane.width + draw_pos,
-				0,
-				pane.width + draw_pos,
-				window_height,
-				Gruvbox.accent,
-			)
-			draw_pos += pane.width
+			rl.DrawRectangle(draw_pos, 0, window_width / pane_len, window_height, Gruvbox.panel)
+			rl.DrawLine(draw_pos, 0, draw_pos, window_height, Gruvbox.accent)
+			draw_pos += window_width / pane_len
 		}
 	}
 	draw_pos = 0
@@ -401,9 +392,7 @@ main :: proc() {
 		panes      = make([dynamic]Pane),
 	}
 
-	pane := Pane {
-		width = 350,
-	}
+	pane := Pane{}
 
 	append(&window.panes, pane)
 
