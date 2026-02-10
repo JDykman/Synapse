@@ -95,6 +95,24 @@ Cursor_State :: struct {
 	line: i32,
 }
 
+Key_Binding :: struct {
+	name:           string,
+	description:    string,
+	primary_key:    rl.KeyboardKey,
+	secondary_key:  rl.KeyboardKey,
+	primary_ctrl:   bool,
+	primary_alt:    bool,
+	secondary_ctrl: bool,
+	secondary_alt:  bool,
+}
+
+New_Pane_Keybind := Key_Binding {
+	name         = "New Pane",
+	description  = "Creates a new pane",
+	primary_key  = .N,
+	primary_ctrl = true,
+}
+
 // Themes
 Theme :: struct {
 	bg:        rl.Color,
@@ -336,7 +354,7 @@ test :: proc(page_store: ^Page_Store, state: ^Global_State) {
 	fmt.printfln("Pre-count: %d", len(test_page.store.root_order))
 
 	// Write to block 1 (Pass the STORE pointer)
-	update_content(test_page.store, test_block_1, "Hellope")
+	update_content(test_page.store, test_block_1, "Hellope\nAgain")
 
 	// Loop check
 	for block_id in test_page.store.root_order {
@@ -352,15 +370,27 @@ test :: proc(page_store: ^Page_Store, state: ^Global_State) {
 }
 
 last_keypress: rl.KeyboardKey = nil
-handle_input :: proc(state: ^Global_State) {
-	if rl.IsKeyDown(.LEFT_CONTROL) && rl.IsKeyDown(.C) {
-		state.running = false //TODO Remove after adding a button
+NEW_PAGE_KEY: rl.KeyboardKey = .N
+
+get_key_debounce :: proc(key: rl.KeyboardKey) -> bool {
+	if (rl.GetKeyPressed() == key && last_keypress != key) {
+		return true
 	}
-	if rl.GetKeyPressed() == rl.KeyboardKey.SPACE && last_keypress != .SPACE {
+	return false
+}
+
+handle_input :: proc(state: ^Global_State) {
+
+	#partial switch rl.GetKeyPressed() {
+	case rl.KeyboardKey.N:
 		fmt.println("New Pane")
 		new_pane := Pane{}
-
 		append(&state.window.panes, new_pane)
+
+	case rl.KeyboardKey.C:
+		state.running = false //TODO Remove after adding a button
+
+	case:
 	}
 	last_keypress = rl.GetKeyPressed()
 }
@@ -375,52 +405,52 @@ render_ui :: proc(state: ^Global_State) {
 	for pane in state.window.panes {
 		rl.DrawRectangle(draw_pos, 0, window_width / pane_len, window_height, Gruvbox.panel)
 		rl.DrawLine(draw_pos, 0, draw_pos, window_height, Gruvbox.accent)
-			if pane.blocks != nil && len(pane.blocks.root_order) > 0 {
-				for block_id in pane.blocks.root_order {
-					block := pane.blocks.blocks[block_id]
-					switch _ in block.data {
+		if pane.blocks != nil && len(pane.blocks.root_order) > 0 {
+			for block_id in pane.blocks.root_order {
+				block := pane.blocks.blocks[block_id]
+				switch _ in block.data {
 
-					case BlockText:
-						if data_ptr, ok := &block.data.(BlockText); ok {
-							rl.DrawText(
-								strings.clone_to_cstring(data_ptr.content),
-								draw_pos,
-								20,
-								24,
-								Gruvbox.text,
-							)
+				case BlockText:
+					if data_ptr, ok := &block.data.(BlockText); ok {
+						rl.DrawText(
+							strings.clone_to_cstring(data_ptr.content),
+							draw_pos,
+							20,
+							24,
+							Gruvbox.text,
+						)
 
-						}
-
-					case BlockHeading:
-						if data_ptr, ok := &block.data.(BlockHeading); ok {
-							rl.DrawText(
-								strings.clone_to_cstring(data_ptr.content),
-								draw_pos,
-								20,
-								24,
-								Gruvbox.text,
-							)
-
-						}
-
-					case BlockTodo:
-						if data_ptr, ok := &block.data.(BlockTodo); ok {
-							rl.DrawText(
-								strings.clone_to_cstring(data_ptr.content),
-								draw_pos,
-								20,
-								24,
-								Gruvbox.text,
-							)
-						}
-
-					case:
-						return
 					}
+
+				case BlockHeading:
+					if data_ptr, ok := &block.data.(BlockHeading); ok {
+						rl.DrawText(
+							strings.clone_to_cstring(data_ptr.content),
+							draw_pos,
+							20,
+							24,
+							Gruvbox.text,
+						)
+
+					}
+
+				case BlockTodo:
+					if data_ptr, ok := &block.data.(BlockTodo); ok {
+						rl.DrawText(
+							strings.clone_to_cstring(data_ptr.content),
+							draw_pos,
+							20,
+							24,
+							Gruvbox.text,
+						)
+					}
+
+				case:
+					return
 				}
 			}
-			draw_pos += window_width / pane_len
+		}
+		draw_pos += window_width / pane_len
 
 	}
 	draw_pos = 0
