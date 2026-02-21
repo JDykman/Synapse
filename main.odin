@@ -424,10 +424,10 @@ handle_input :: proc(state: ^Global_State) {
 
 	#partial switch rl.GetKeyPressed() {
 	case .N:
-		fmt.println("New HorizontalPane")
-		append(&state.window.horizontal_panes, HorizontalPane{})
-	case .C:
-		state.running = false
+		if rl.IsKeyDown(.RIGHT_CONTROL) {
+			fmt.println("New HorizontalPane")
+			append(&state.window.horizontal_panes, HorizontalPane{})
+		}
 	}
 
 	cursor_keys := [4]rl.KeyboardKey{.LEFT, .RIGHT, .UP, .DOWN}
@@ -440,6 +440,34 @@ handle_input :: proc(state: ^Global_State) {
 		}
 	}
 
+	if rl.IsKeyPressed(.BACKSPACE) {
+		pane := state.window.horizontal_panes[CURRENT_PANE_INDEX]
+		if pane.blocks != nil {
+			if block_ptr, ok := &pane.blocks.blocks[state.cursor.block_id]; ok {
+				if data_ptr, ok := &block_ptr.data.(BlockText); ok {
+					if state.cursor.char_offset > 0 {
+						ordered_remove(&data_ptr.content.buf, state.cursor.char_offset - 1)
+						state.cursor.char_offset -= 1
+					}
+				}
+			}
+		}
+	}
+
+	for {
+		ch := rl.GetCharPressed()
+		if ch == 0 {break}
+		pane := state.window.horizontal_panes[CURRENT_PANE_INDEX]
+		if pane.blocks == nil {continue}
+		if block_ptr, ok := &pane.blocks.blocks[state.cursor.block_id]; ok {
+			if data_ptr, ok := &block_ptr.data.(BlockText); ok {
+				inject_at(&data_ptr.content.buf, state.cursor.char_offset, u8(ch))
+				state.cursor.char_offset += 1
+			}
+		}
+	}
+
+
 	if rep.held_key != nil && rl.IsKeyDown(rep.held_key) {
 		rep.timer -= dt
 		if rep.timer <= 0 {
@@ -449,6 +477,8 @@ handle_input :: proc(state: ^Global_State) {
 	} else {
 		rep.held_key = nil
 	}
+
+
 }
 
 render_ui :: proc(state: ^Global_State) {
