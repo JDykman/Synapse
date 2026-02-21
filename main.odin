@@ -1,7 +1,6 @@
 package main
 
 import "core:fmt"
-import "core:mem"
 import "core:strings"
 import rl "vendor:raylib"
 
@@ -11,7 +10,9 @@ DEBUG: bool = true
 Block_ID :: distinct u64
 Page_ID :: u64
 
-CURRENT_PANE: ^Pane
+Default_Padding: i32 = 25
+
+CURRENT_PANE_INDEX: int = 0
 
 BlockType :: enum {
 	Text,
@@ -21,16 +22,16 @@ BlockType :: enum {
 
 // Blocks
 BlockText :: struct {
-	content: string,
+	content: strings.Builder,
 }
 
 BlockTodo :: struct {
-	content: string,
+	content: strings.Builder,
 	checked: bool,
 }
 
 BlockHeading :: struct {
-	content: string,
+	content: strings.Builder,
 }
 
 BlockData :: union {
@@ -65,7 +66,7 @@ BlockStore :: struct {
 	next_id:    Block_ID,
 }
 
-Pane :: struct {
+HorizontalPane :: struct {
 	position: int,
 	line_num: int,
 	blocks:   ^BlockStore,
@@ -73,10 +74,11 @@ Pane :: struct {
 
 // States
 Window_State :: struct {
-	size_x:     i32,
-	size_y:     i32,
-	target_fps: i32,
-	panes:      [dynamic]Pane,
+	size_x:           i32,
+	size_y:           i32,
+	target_fps:       i32,
+	horizontal_panes: [dynamic]HorizontalPane,
+	font:             rl.Font,
 }
 
 Global_State :: struct {
@@ -84,15 +86,12 @@ Global_State :: struct {
 	debug:   bool,
 	store:   Page_Store,
 	window:  Window_State,
-	ui:      UI_State,
-}
-
-UI_State :: struct {
-	side_bar_width: i32,
+	cursor:  Cursor_State,
 }
 
 Cursor_State :: struct {
-	line: i32,
+	block_id:    Block_ID,
+	char_offset: int,
 }
 
 Key_Binding :: struct {
@@ -106,30 +105,30 @@ Key_Binding :: struct {
 	secondary_alt:  bool,
 }
 
-New_Pane_Keybind := Key_Binding {
-	name         = "New Pane",
-	description  = "Creates a new pane",
+New_HorizontalPane_Keybind := Key_Binding {
+	name         = "New HorizontalPane",
+	description  = "Creates a new horizontal_pane",
 	primary_key  = .N,
 	primary_ctrl = true,
 }
 
 // Themes
 Theme :: struct {
-	bg:        rl.Color,
-	panel:     rl.Color,
-	text:      rl.Color,
-	text_dim:  rl.Color,
-	selection: rl.Color,
-	accent:    rl.Color,
+	bg:               rl.Color,
+	horizontal_panel: rl.Color,
+	text:             rl.Color,
+	text_dim:         rl.Color,
+	selection:        rl.Color,
+	accent:           rl.Color,
 }
 
 Gruvbox :: Theme {
-	bg        = {29, 32, 33, 255}, // #1d2021
-	panel     = {40, 40, 40, 255}, // #282828
-	text      = {235, 219, 178, 255}, // #ebdbb2
-	text_dim  = {168, 153, 132, 255}, // #a89984
-	selection = {80, 73, 69, 255}, // #504945
-	accent    = {184, 187, 38, 255}, // #b8bb26 (Green)
+	bg               = {29, 32, 33, 255}, // #1d2021
+	horizontal_panel = {40, 40, 40, 255}, // #282828
+	text             = {235, 219, 178, 255}, // #ebdbb2
+	text_dim         = {168, 153, 132, 255}, // #a89984
+	selection        = {80, 73, 69, 255}, // #504945
+	accent           = {184, 187, 38, 255}, // #b8bb26 (Green)
 }
 
 create_page :: proc(page_store: ^Page_Store) -> Page_ID {
@@ -159,26 +158,20 @@ get_page :: proc(store: ^Page_Store, id: Page_ID) -> ^Page {
 }
 
 load_page :: proc(state: ^Global_State, page_id: Page_ID) {
-	// specific_arena is a block of memory just for this operation
-	arena: mem.Arena
-	mem.arena_init(&arena, make([]byte, 16 * mem.Megabyte))
-	defer mem.arena_free_all(&arena)
-
-	// Push the arena into the context so all implicit allocations use it
-	context.allocator = mem.arena_allocator(&arena)
-
-	// Everything allocated here (arrays, strings) lives in the arena
-	// No need to manually free individual objects!
 	blocks := state.store.pages[page_id].store
-	CURRENT_PANE^.blocks = blocks
+	state.window.horizontal_panes[CURRENT_PANE_INDEX].blocks = blocks
+	if len(blocks.root_order) > 0 {
+		state.cursor.block_id = blocks.root_order[0]
+		state.cursor.char_offset = 0
+	}
 }
 
-init_store :: proc() -> ^Page_Store {
-	store := new(Page_Store)
-	store.pages = make(map[Page_ID]Page)
-	store.root_order = make([dynamic]Page_ID)
-	store.next_id = 1
-	return store
+init_store :: proc() -> Page_Store {
+	return Page_Store {
+		pages = make(map[Page_ID]Page),
+		root_order = make([dynamic]Page_ID),
+		next_id = 1,
+	}
 }
 
 create_block :: proc(
@@ -196,18 +189,18 @@ create_block :: proc(
 		switch type {
 		case .Text:
 			_data = BlockText {
-				content = "",
+				content = strings.builder_make(),
 			}
 
 		case .Todo:
 			_data = BlockTodo {
-				content = "",
+				content = strings.builder_make(),
 				checked = false,
 			}
 
 		case .Heading:
 			_data = BlockHeading {
-				content = "",
+				content = strings.builder_make(),
 			}
 		}
 	}
@@ -303,20 +296,20 @@ update_content :: proc(store: ^BlockStore, id: Block_ID, new_text: string) {
 
 		case BlockText:
 			if data_ptr, ok := &block.data.(BlockText); ok {
-				delete(data_ptr.content)
-				data_ptr.content = strings.clone(new_text)
+				strings.builder_reset(&data_ptr.content)
+				strings.write_string(&data_ptr.content, new_text)
 			}
 
 		case BlockHeading:
 			if data_ptr, ok := &block.data.(BlockHeading); ok {
-				delete(data_ptr.content)
-				data_ptr.content = strings.clone(new_text)
+				strings.builder_reset(&data_ptr.content)
+				strings.write_string(&data_ptr.content, new_text)
 			}
 
 		case BlockTodo:
 			if data_ptr, ok := &block.data.(BlockTodo); ok {
-				delete(data_ptr.content)
-				data_ptr.content = strings.clone(new_text)
+				strings.builder_reset(&data_ptr.content)
+				strings.write_string(&data_ptr.content, new_text)
 			}
 
 		case:
@@ -354,7 +347,7 @@ test :: proc(page_store: ^Page_Store, state: ^Global_State) {
 	fmt.printfln("Pre-count: %d", len(test_page.store.root_order))
 
 	// Write to block 1 (Pass the STORE pointer)
-	update_content(test_page.store, test_block_1, "Hellope\nAgain")
+	update_content(test_page.store, test_block_1, "Helloope")
 
 	// Loop check
 	for block_id in test_page.store.root_order {
@@ -380,111 +373,129 @@ get_key_debounce :: proc(key: rl.KeyboardKey) -> bool {
 }
 
 handle_input :: proc(state: ^Global_State) {
+	key := rl.GetKeyPressed()
 
-	#partial switch rl.GetKeyPressed() {
+	#partial switch key {
 	case rl.KeyboardKey.N:
-		fmt.println("New Pane")
-		new_pane := Pane{}
-		append(&state.window.panes, new_pane)
+		fmt.println("New HorizontalPane")
+		new_horizontal_pane := HorizontalPane{}
+		append(&state.window.horizontal_panes, new_horizontal_pane)
 
 	case rl.KeyboardKey.C:
 		state.running = false //TODO Remove after adding a button
+	case rl.KeyboardKey.RIGHT:
+		state.cursor.char_offset += 1
+	case rl.KeyboardKey.LEFT:
+		state.cursor.char_offset -= 1
+	case rl.KeyboardKey.UP:
+		if 0 > state.cursor.block_id {
+			state.cursor.block_id += 1
+		}
+	case rl.KeyboardKey.DOWN:
+		if state.window.horizontal_panes[CURRENT_PANE_INDEX].blocks.next_id <
+		   state.cursor.block_id {
+			state.cursor.block_id -= 1
+		}
 
-	case:
 	}
-	last_keypress = rl.GetKeyPressed()
+	last_keypress = key
 }
 
 render_ui :: proc(state: ^Global_State) {
-	mouse_pos := rl.GetMousePosition()
 	draw_pos: i32 = 0
 	window_height := rl.GetScreenHeight()
 	window_width := rl.GetScreenWidth()
+	font_size: f32 = 24
+	line_spacing: f32 = 4
 
-	pane_len := i32(max(len(state.window.panes), 1))
-	for pane in state.window.panes {
-		rl.DrawRectangle(draw_pos, 0, window_width / pane_len, window_height, Gruvbox.panel)
-		rl.DrawLine(draw_pos, 0, draw_pos, window_height, Gruvbox.accent)
-		if pane.blocks != nil && len(pane.blocks.root_order) > 0 {
-			for block_id in pane.blocks.root_order {
-				block := pane.blocks.blocks[block_id]
-				switch _ in block.data {
+	//---- Panes -----
+	horizontal_pane_len := i32(max(len(state.window.horizontal_panes), 1))
+	for horizontal_pane in state.window.horizontal_panes {
+		horizontal_pane_width := window_width / horizontal_pane_len
 
+		// Pane Separator
+		rl.DrawLine(
+			draw_pos,
+			0 + Default_Padding,
+			draw_pos,
+			window_height - Default_Padding,
+			rl.ColorBrightness(Gruvbox.horizontal_panel, .1),
+		)
+
+		draw_pos += 1
+		draw_y: f32 = 8
+
+		if horizontal_pane.blocks != nil && len(horizontal_pane.blocks.root_order) > 0 {
+			for block_id in horizontal_pane.blocks.root_order {
+				block := horizontal_pane.blocks.blocks[block_id]
+				content: string
+				switch d in block.data {
 				case BlockText:
-					if data_ptr, ok := &block.data.(BlockText); ok {
-						rl.DrawText(
-							strings.clone_to_cstring(data_ptr.content),
-							draw_pos,
-							20,
-							24,
-							Gruvbox.text,
-						)
-
-					}
-
+					content = strings.to_string(d.content)
 				case BlockHeading:
-					if data_ptr, ok := &block.data.(BlockHeading); ok {
-						rl.DrawText(
-							strings.clone_to_cstring(data_ptr.content),
-							draw_pos,
-							20,
-							24,
-							Gruvbox.text,
-						)
-
-					}
-
+					content = strings.to_string(d.content)
 				case BlockTodo:
-					if data_ptr, ok := &block.data.(BlockTodo); ok {
-						rl.DrawText(
-							strings.clone_to_cstring(data_ptr.content),
-							draw_pos,
-							20,
-							24,
-							Gruvbox.text,
-						)
-					}
-
+					content = strings.to_string(d.content)
 				case:
-					return
+					continue
 				}
+
+				cstr := strings.clone_to_cstring(content, context.temp_allocator)
+
+				rl.DrawTextEx(
+					state.window.font,
+					cstr,
+					{f32(draw_pos + Default_Padding), draw_y},
+					font_size,
+					1,
+					Gruvbox.text,
+				)
+
+				if block_id == state.cursor.block_id {
+					offset := clamp(state.cursor.char_offset, 0, len(content))
+					prefix := content[:offset]
+					prefix_cstr := strings.clone_to_cstring(prefix, context.temp_allocator)
+					text_size := rl.MeasureTextEx(state.window.font, prefix_cstr, font_size, 1)
+
+					cursor_x := f32(draw_pos + Default_Padding) + text_size.x
+					cursor_y := draw_y
+
+					rl.DrawRectangle(i32(cursor_x), i32(cursor_y), 2, i32(font_size), Gruvbox.text)
+				}
+				draw_y += font_size + line_spacing
 			}
 		}
-		draw_pos += window_width / pane_len
+		draw_pos += horizontal_pane_width
 
 	}
-	draw_pos = 0
-	if state.debug {rl.DrawFPS(0, 0)}
 }
 
 main :: proc() {
 
 	window := Window_State {
-		size_x     = 1280,
-		size_y     = 720,
-		target_fps = 60,
-		panes      = make([dynamic]Pane),
+		size_x           = 1280,
+		size_y           = 720,
+		target_fps       = 60,
+		horizontal_panes = make([dynamic]HorizontalPane),
 	}
-
 
 	rl.SetConfigFlags({.WINDOW_RESIZABLE})
 	rl.InitWindow(window.size_x, window.size_y, "Synapse - Note Taker")
 	rl.SetTargetFPS(window.target_fps)
 
+	window.font = rl.LoadFontEx("things/fonts/JetBrainsMono-Regular.ttf", 32, nil, 0)
+
 	state := Global_State {
 		running = true,
-		store = init_store()^,
-		debug = DEBUG,
-		ui = {side_bar_width = 128},
-		window = window,
+		store   = init_store(),
+		debug   = DEBUG,
+		window  = window,
 	}
 
-	pane := Pane{}
-	append(&state.window.panes, pane)
-	CURRENT_PANE = &state.window.panes[len(state.window.panes) - 1]
+	horizontal_pane := HorizontalPane{}
+	append(&state.window.horizontal_panes, horizontal_pane)
+	CURRENT_PANE_INDEX = len(state.window.horizontal_panes) - 1
 	test(&state.store, &state)
-
-	font := rl.LoadFontEx("things/fonts/JetBrainsMono-Regular.ttf", 32, nil, 0)
 
 	for !rl.WindowShouldClose() && state.running {
 		handle_input(&state)
@@ -492,6 +503,7 @@ main :: proc() {
 		rl.ClearBackground(Gruvbox.bg)
 		render_ui(&state)
 		rl.EndDrawing()
+		free_all(context.temp_allocator)
 	}
 
 	rl.CloseWindow()
