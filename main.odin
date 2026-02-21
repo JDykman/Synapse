@@ -90,8 +90,16 @@ Global_State :: struct {
 }
 
 Cursor_State :: struct {
-	block_id:    Block_ID,
-	char_offset: int,
+	key_repeat_state: Key_Repeat,
+	block_id:         Block_ID,
+	char_offset:      int,
+}
+
+Key_Repeat :: struct {
+	initial_delay: f32,
+	repeat_delay:  f32,
+	timer:         f32,
+	held_key:      rl.KeyboardKey,
 }
 
 Key_Binding :: struct {
@@ -231,6 +239,7 @@ create_block :: proc(
 		}
 	}
 
+	fmt.printfln("New Block With ID: %i", new_id)
 	return new_id
 }
 
@@ -337,8 +346,7 @@ test :: proc(page_store: ^Page_Store, state: ^Global_State) {
 	test_page.title = "Test Page"
 
 	test_block_1 := create_block(test_page.store, BlockType.Text)
-	test_block_2 := create_block(test_page.store, BlockType.Todo)
-	test_block_3 := create_block(test_page.store, BlockType.Heading)
+	test_block_2 := create_block(test_page.store, BlockType.Text)
 
 	fmt.printfln("Test Page ID: %v, Title: %s", test_page_id, test_page.title)
 	fmt.println("--------------")
@@ -348,6 +356,7 @@ test :: proc(page_store: ^Page_Store, state: ^Global_State) {
 
 	// Write to block 1 (Pass the STORE pointer)
 	update_content(test_page.store, test_block_1, "Helloope")
+	update_content(test_page.store, test_block_2, "Helloope Again!")
 
 	// Loop check
 	for block_id in test_page.store.root_order {
@@ -362,43 +371,84 @@ test :: proc(page_store: ^Page_Store, state: ^Global_State) {
 	fmt.printfln("Post-count: %d", len(test_page.store.root_order))
 }
 
-last_keypress: rl.KeyboardKey = nil
-NEW_PAGE_KEY: rl.KeyboardKey = .N
-
-get_key_debounce :: proc(key: rl.KeyboardKey) -> bool {
-	if (rl.GetKeyPressed() == key && last_keypress != key) {
-		return true
+block_content_len :: proc(state: ^Global_State, block_id: Block_ID) -> int {
+	pane := state.window.horizontal_panes[CURRENT_PANE_INDEX]
+	if pane.blocks == nil {return 0}
+	block, ok := pane.blocks.blocks[block_id]
+	if !ok {return 0}
+	switch d in block.data {
+	case BlockText:
+		return len(strings.to_string(d.content))
+	case BlockHeading:
+		return len(strings.to_string(d.content))
+	case BlockTodo:
+		return len(strings.to_string(d.content))
 	}
-	return false
+	return 0
+}
+
+move_cursor :: proc(state: ^Global_State, key: rl.KeyboardKey) {
+	#partial switch key {
+	case .UP:
+		if state.cursor.block_id > 1 {
+			state.cursor.block_id -= 1
+			state.cursor.char_offset = clamp(
+				state.cursor.char_offset,
+				0,
+				block_content_len(state, state.cursor.block_id),
+			)
+		}
+	case .DOWN:
+		if state.window.horizontal_panes[CURRENT_PANE_INDEX].blocks.next_id - 1 >
+		   state.cursor.block_id {
+			state.cursor.block_id += 1
+			state.cursor.char_offset = clamp(
+				state.cursor.char_offset,
+				0,
+				block_content_len(state, state.cursor.block_id),
+			)
+		}
+	case .LEFT:
+		state.cursor.char_offset = max(0, state.cursor.char_offset - 1)
+	case .RIGHT:
+		state.cursor.char_offset = min(
+			block_content_len(state, state.cursor.block_id),
+			state.cursor.char_offset + 1,
+		)
+	}
 }
 
 handle_input :: proc(state: ^Global_State) {
-	key := rl.GetKeyPressed()
+	dt := rl.GetFrameTime()
+	rep := &state.cursor.key_repeat_state
 
-	#partial switch key {
-	case rl.KeyboardKey.N:
+	#partial switch rl.GetKeyPressed() {
+	case .N:
 		fmt.println("New HorizontalPane")
-		new_horizontal_pane := HorizontalPane{}
-		append(&state.window.horizontal_panes, new_horizontal_pane)
-
-	case rl.KeyboardKey.C:
-		state.running = false //TODO Remove after adding a button
-	case rl.KeyboardKey.RIGHT:
-		state.cursor.char_offset += 1
-	case rl.KeyboardKey.LEFT:
-		state.cursor.char_offset -= 1
-	case rl.KeyboardKey.UP:
-		if 0 > state.cursor.block_id {
-			state.cursor.block_id += 1
-		}
-	case rl.KeyboardKey.DOWN:
-		if state.window.horizontal_panes[CURRENT_PANE_INDEX].blocks.next_id <
-		   state.cursor.block_id {
-			state.cursor.block_id -= 1
-		}
-
+		append(&state.window.horizontal_panes, HorizontalPane{})
+	case .C:
+		state.running = false
 	}
-	last_keypress = key
+
+	cursor_keys := [4]rl.KeyboardKey{.LEFT, .RIGHT, .UP, .DOWN}
+	for k in cursor_keys {
+		if rl.IsKeyPressed(k) {
+			move_cursor(state, k)
+			rep.held_key = k
+			rep.timer = rep.initial_delay
+			break
+		}
+	}
+
+	if rep.held_key != nil && rl.IsKeyDown(rep.held_key) {
+		rep.timer -= dt
+		if rep.timer <= 0 {
+			move_cursor(state, rep.held_key)
+			rep.timer = rep.repeat_delay
+		}
+	} else {
+		rep.held_key = nil
+	}
 }
 
 render_ui :: proc(state: ^Global_State) {
@@ -487,9 +537,10 @@ main :: proc() {
 
 	state := Global_State {
 		running = true,
-		store   = init_store(),
-		debug   = DEBUG,
-		window  = window,
+		store = init_store(),
+		debug = DEBUG,
+		window = window,
+		cursor = {key_repeat_state = {initial_delay = 0.3, repeat_delay = 0.05}},
 	}
 
 	horizontal_pane := HorizontalPane{}
