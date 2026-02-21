@@ -454,6 +454,19 @@ handle_input :: proc(state: ^Global_State) {
 		}
 	}
 
+	if rl.IsKeyPressed(.DELETE) {
+		pane := state.window.horizontal_panes[CURRENT_PANE_INDEX]
+		if pane.blocks != nil {
+			if block_ptr, ok := &pane.blocks.blocks[state.cursor.block_id]; ok {
+				if data_ptr, ok := &block_ptr.data.(BlockText); ok {
+					if state.cursor.char_offset > 0 {
+						ordered_remove(&data_ptr.content.buf, state.cursor.char_offset)
+					}
+				}
+			}
+		}
+	}
+
 	for {
 		ch := rl.GetCharPressed()
 		if ch == 0 {break}
