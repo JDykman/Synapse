@@ -243,6 +243,23 @@ create_block :: proc(
 	return new_id
 }
 
+move_block :: proc(store: ^BlockStore, block_id: Block_ID, new_block_id: Block_ID) {
+	if block_id == new_block_id {return}
+	if !(block_id in store.blocks) || !(new_block_id in store.blocks) {return}
+
+	from_index := -1
+	to_index := -1
+	for id, i in store.root_order {
+		if id == block_id {from_index = i}
+		if id == new_block_id {to_index = i}
+	}
+	if from_index == -1 || to_index == -1 {return}
+
+	ordered_remove(&store.root_order, from_index)
+	if to_index > from_index {to_index -= 1}
+	inject_at(&store.root_order, to_index, block_id)
+}
+
 delete_block :: proc(store: ^BlockStore, block_id: Block_ID) -> bool {
 	// Retrieve the block to delete
 	block := store.blocks[block_id] or_return
@@ -388,25 +405,34 @@ block_content_len :: proc(state: ^Global_State, block_id: Block_ID) -> int {
 }
 
 move_cursor :: proc(state: ^Global_State, key: rl.KeyboardKey) {
+	pane := state.window.horizontal_panes[CURRENT_PANE_INDEX]
+	if pane.blocks == nil {return}
+	root := pane.blocks.root_order
+
 	#partial switch key {
 	case .UP:
-		if state.cursor.block_id > 1 {
-			state.cursor.block_id -= 1
-			state.cursor.char_offset = clamp(
-				state.cursor.char_offset,
-				0,
-				block_content_len(state, state.cursor.block_id),
-			)
+		for id, i in root {
+			if id == state.cursor.block_id && i > 0 {
+				state.cursor.block_id = root[i - 1]
+				state.cursor.char_offset = clamp(
+					state.cursor.char_offset,
+					0,
+					block_content_len(state, state.cursor.block_id),
+				)
+				break
+			}
 		}
 	case .DOWN:
-		if state.window.horizontal_panes[CURRENT_PANE_INDEX].blocks.next_id - 1 >
-		   state.cursor.block_id {
-			state.cursor.block_id += 1
-			state.cursor.char_offset = clamp(
-				state.cursor.char_offset,
-				0,
-				block_content_len(state, state.cursor.block_id),
-			)
+		for id, i in root {
+			if id == state.cursor.block_id && i < len(root) - 1 {
+				state.cursor.block_id = root[i + 1]
+				state.cursor.char_offset = clamp(
+					state.cursor.char_offset,
+					0,
+					block_content_len(state, state.cursor.block_id),
+				)
+				break
+			}
 		}
 	case .LEFT:
 		state.cursor.char_offset = max(0, state.cursor.char_offset - 1)
@@ -464,6 +490,30 @@ handle_input :: proc(state: ^Global_State) {
 					}
 				}
 			}
+		}
+	}
+
+	if rl.IsKeyPressed(.ENTER) {
+		pane := state.window.horizontal_panes[CURRENT_PANE_INDEX]
+		if pane.blocks != nil {
+			current_index := -1
+			for id, i in pane.blocks.root_order {
+				if id == state.cursor.block_id {
+					current_index = i
+					break
+				}
+			}
+			new_id := create_block(pane.blocks, .Text)
+			// create_block appends to the end; move it to just after the current block
+			if current_index != -1 {
+				last := len(pane.blocks.root_order) - 1
+				if current_index + 1 < last {
+					ordered_remove(&pane.blocks.root_order, last)
+					inject_at(&pane.blocks.root_order, current_index + 1, new_id)
+				}
+			}
+			state.cursor.block_id = new_id
+			state.cursor.char_offset = 0
 		}
 	}
 
