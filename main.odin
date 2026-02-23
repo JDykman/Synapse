@@ -12,7 +12,7 @@ Page_ID :: u64
 
 Default_Padding: i32 = 25
 
-CURRENT_PANE_INDEX: int = 0
+CURRENT_PANE_INDEX: int = 0 // index of the pane that has keyboard focus
 
 BlockType :: enum {
 	Text,
@@ -62,7 +62,7 @@ Page_Store :: struct {
 
 BlockStore :: struct {
 	blocks:     map[Block_ID]Block,
-	root_order: [dynamic]Block_ID,
+	root_order: [dynamic]Block_ID, // explicit ordering; map has no guaranteed order
 	next_id:    Block_ID,
 }
 
@@ -95,6 +95,7 @@ Cursor_State :: struct {
 	char_offset:      int,
 }
 
+// Fires once on press, waits initial_delay, then repeats every repeat_delay while held.
 Key_Repeat :: struct {
 	initial_delay: f32,
 	repeat_delay:  f32,
@@ -256,7 +257,7 @@ move_block :: proc(store: ^BlockStore, block_id: Block_ID, new_block_id: Block_I
 	if from_index == -1 || to_index == -1 {return}
 
 	ordered_remove(&store.root_order, from_index)
-	if to_index > from_index {to_index -= 1}
+	if to_index > from_index {to_index -= 1} // adjust for the removal shifting indices down
 	inject_at(&store.root_order, to_index, block_id)
 }
 
@@ -404,6 +405,7 @@ block_content_len :: proc(state: ^Global_State, block_id: Block_ID) -> int {
 	return 0
 }
 
+// UP/DOWN navigate by position in root_order, not by block ID.
 move_cursor :: proc(state: ^Global_State, key: rl.KeyboardKey) {
 	pane := state.window.horizontal_panes[CURRENT_PANE_INDEX]
 	if pane.blocks == nil {return}
@@ -485,7 +487,7 @@ handle_input :: proc(state: ^Global_State) {
 		if pane.blocks != nil {
 			if block_ptr, ok := &pane.blocks.blocks[state.cursor.block_id]; ok {
 				if data_ptr, ok := &block_ptr.data.(BlockText); ok {
-					if state.cursor.char_offset > 0 {
+					if state.cursor.char_offset >= 0 {
 						ordered_remove(&data_ptr.content.buf, state.cursor.char_offset)
 					}
 				}
@@ -496,6 +498,22 @@ handle_input :: proc(state: ^Global_State) {
 	if rl.IsKeyPressed(.ENTER) {
 		pane := state.window.horizontal_panes[CURRENT_PANE_INDEX]
 		if pane.blocks != nil {
+			// 1. Grab and remove text after cursor from the current block
+			cut_text: string
+			if block_ptr, ok := &pane.blocks.blocks[state.cursor.block_id]; ok {
+				if data_ptr, ok := &block_ptr.data.(BlockText); ok {
+					content := strings.to_string(data_ptr.content)
+					if state.cursor.char_offset < len(content) {
+						cut_text = strings.clone(
+							content[state.cursor.char_offset:],
+							context.temp_allocator,
+						)
+						resize(&data_ptr.content.buf, state.cursor.char_offset)
+					}
+				}
+			}
+
+			// 2. Find current position and create the new block
 			current_index := -1
 			for id, i in pane.blocks.root_order {
 				if id == state.cursor.block_id {
@@ -504,7 +522,8 @@ handle_input :: proc(state: ^Global_State) {
 				}
 			}
 			new_id := create_block(pane.blocks, .Text)
-			// create_block appends to the end; move it to just after the current block
+
+			// 3. Reposition new block to right after current block
 			if current_index != -1 {
 				last := len(pane.blocks.root_order) - 1
 				if current_index + 1 < last {
@@ -512,6 +531,16 @@ handle_input :: proc(state: ^Global_State) {
 					inject_at(&pane.blocks.root_order, current_index + 1, new_id)
 				}
 			}
+
+			// 4. Write cut text into new block at position 0
+			if cut_text != "" {
+				if block_ptr, ok := &pane.blocks.blocks[new_id]; ok {
+					if data_ptr, ok := &block_ptr.data.(BlockText); ok {
+						strings.write_string(&data_ptr.content, cut_text)
+					}
+				}
+			}
+
 			state.cursor.block_id = new_id
 			state.cursor.char_offset = 0
 		}
@@ -531,6 +560,7 @@ handle_input :: proc(state: ^Global_State) {
 	}
 
 
+	// drive key repeat while a cursor key is held
 	if rep.held_key != nil && rl.IsKeyDown(rep.held_key) {
 		rep.timer -= dt
 		if rep.timer <= 0 {
@@ -596,6 +626,7 @@ render_ui :: proc(state: ^Global_State) {
 
 				if block_id == state.cursor.block_id {
 					offset := clamp(state.cursor.char_offset, 0, len(content))
+					// measure the prefix up to the cursor to find its x position
 					prefix := content[:offset]
 					prefix_cstr := strings.clone_to_cstring(prefix, context.temp_allocator)
 					text_size := rl.MeasureTextEx(state.window.font, prefix_cstr, font_size, 1)
