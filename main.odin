@@ -257,7 +257,7 @@ move_block :: proc(store: ^BlockStore, block_id: Block_ID, new_block_id: Block_I
 	if from_index == -1 || to_index == -1 {return}
 
 	ordered_remove(&store.root_order, from_index)
-	if to_index > from_index {to_index -= 1} // adjust for the removal shifting indices down
+	if to_index > from_index {to_index -= 1} 	// adjust for the removal shifting indices down
 	inject_at(&store.root_order, to_index, block_id)
 }
 
@@ -476,6 +476,31 @@ handle_input :: proc(state: ^Global_State) {
 					if state.cursor.char_offset > 0 {
 						ordered_remove(&data_ptr.content.buf, state.cursor.char_offset - 1)
 						state.cursor.char_offset -= 1
+					} else {
+						// at offset 0: merge current block's content into the previous block
+						current_index := -1
+						for id, i in pane.blocks.root_order {
+							if id == state.cursor.block_id {
+								current_index = i
+								break
+							}
+						}
+						if current_index > 0 {
+							prev_id := pane.blocks.root_order[current_index - 1]
+							if prev_ptr, ok := &pane.blocks.blocks[prev_id]; ok {
+								if prev_data, ok := &prev_ptr.data.(BlockText); ok {
+									prev_len := len(strings.to_string(prev_data.content))
+									strings.write_string(
+										&prev_data.content,
+										strings.to_string(data_ptr.content),
+									)
+									ordered_remove(&pane.blocks.root_order, current_index)
+									delete_key(&pane.blocks.blocks, state.cursor.block_id)
+									state.cursor.block_id = prev_id
+									state.cursor.char_offset = prev_len
+								}
+							}
+						}
 					}
 				}
 			}
@@ -487,7 +512,8 @@ handle_input :: proc(state: ^Global_State) {
 		if pane.blocks != nil {
 			if block_ptr, ok := &pane.blocks.blocks[state.cursor.block_id]; ok {
 				if data_ptr, ok := &block_ptr.data.(BlockText); ok {
-					if state.cursor.char_offset >= 0 {
+					if state.cursor.char_offset >= 0 &&
+					   state.cursor.char_offset < len(&data_ptr.content.buf) {
 						ordered_remove(&data_ptr.content.buf, state.cursor.char_offset)
 					}
 				}
