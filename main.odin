@@ -450,12 +450,9 @@ handle_input :: proc(state: ^Global_State) {
 	dt := rl.GetFrameTime()
 	rep := &state.cursor.key_repeat_state
 
-	#partial switch rl.GetKeyPressed() {
-	case .N:
-		if rl.IsKeyDown(.RIGHT_CONTROL) {
-			fmt.println("New HorizontalPane")
-			append(&state.window.horizontal_panes, HorizontalPane{})
-		}
+	if rl.IsKeyPressed(.N) && (rl.IsKeyDown(.LEFT_CONTROL) || rl.IsKeyDown(.RIGHT_CONTROL)) {
+		fmt.println("New HorizontalPane")
+		append(&state.window.horizontal_panes, HorizontalPane{})
 	}
 
 	cursor_keys := [4]rl.KeyboardKey{.LEFT, .RIGHT, .UP, .DOWN}
@@ -512,9 +509,30 @@ handle_input :: proc(state: ^Global_State) {
 		if pane.blocks != nil {
 			if block_ptr, ok := &pane.blocks.blocks[state.cursor.block_id]; ok {
 				if data_ptr, ok := &block_ptr.data.(BlockText); ok {
-					if state.cursor.char_offset >= 0 &&
-					   state.cursor.char_offset < len(&data_ptr.content.buf) {
+					if state.cursor.char_offset < len(data_ptr.content.buf) {
 						ordered_remove(&data_ptr.content.buf, state.cursor.char_offset)
+					} else {
+						// at end of block: pull next block's content into this one and remove it
+						current_index := -1
+						for id, i in pane.blocks.root_order {
+							if id == state.cursor.block_id {
+								current_index = i
+								break
+							}
+						}
+						if current_index != -1 && current_index < len(pane.blocks.root_order) - 1 {
+							next_id := pane.blocks.root_order[current_index + 1]
+							if next_ptr, ok := &pane.blocks.blocks[next_id]; ok {
+								if next_data, ok := &next_ptr.data.(BlockText); ok {
+									strings.write_string(
+										&data_ptr.content,
+										strings.to_string(next_data.content),
+									)
+									ordered_remove(&pane.blocks.root_order, current_index + 1)
+									delete_key(&pane.blocks.blocks, next_id)
+								}
+							}
+						}
 					}
 				}
 			}
@@ -606,6 +624,7 @@ render_ui :: proc(state: ^Global_State) {
 	window_width := rl.GetScreenWidth()
 	font_size: f32 = 24
 	line_spacing: f32 = 4
+	if DEBUG do rl.DrawFPS(0, 0)
 
 	//---- Panes -----
 	horizontal_pane_len := i32(max(len(state.window.horizontal_panes), 1))
