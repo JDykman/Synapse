@@ -66,7 +66,7 @@ BlockStore :: struct {
 	next_id:    Block_ID,
 }
 
-HorizontalPane :: struct {
+Pane :: struct {
 	position: int,
 	line_num: int,
 	blocks:   ^BlockStore,
@@ -74,11 +74,11 @@ HorizontalPane :: struct {
 
 // States
 Window_State :: struct {
-	size_x:           i32,
-	size_y:           i32,
-	target_fps:       i32,
-	horizontal_panes: [dynamic]HorizontalPane,
-	font:             rl.Font,
+	size_x:     i32,
+	size_y:     i32,
+	target_fps: i32,
+	panes:      [dynamic]Pane,
+	font:       rl.Font,
 }
 
 Global_State :: struct {
@@ -114,30 +114,30 @@ Key_Binding :: struct {
 	secondary_alt:  bool,
 }
 
-New_HorizontalPane_Keybind := Key_Binding {
-	name         = "New HorizontalPane",
-	description  = "Creates a new horizontal_pane",
+New_Pane_Keybind := Key_Binding {
+	name         = "New Pane",
+	description  = "Creates a new pane",
 	primary_key  = .N,
 	primary_ctrl = true,
 }
 
 // Themes
 Theme :: struct {
-	bg:               rl.Color,
-	horizontal_panel: rl.Color,
-	text:             rl.Color,
-	text_dim:         rl.Color,
-	selection:        rl.Color,
-	accent:           rl.Color,
+	bg:        rl.Color,
+	panel:     rl.Color,
+	text:      rl.Color,
+	text_dim:  rl.Color,
+	selection: rl.Color,
+	accent:    rl.Color,
 }
 
 Gruvbox :: Theme {
-	bg               = {29, 32, 33, 255}, // #1d2021
-	horizontal_panel = {40, 40, 40, 255}, // #282828
-	text             = {235, 219, 178, 255}, // #ebdbb2
-	text_dim         = {168, 153, 132, 255}, // #a89984
-	selection        = {80, 73, 69, 255}, // #504945
-	accent           = {184, 187, 38, 255}, // #b8bb26 (Green)
+	bg        = {29, 32, 33, 255}, // #1d2021
+	panel     = {40, 40, 40, 255}, // #282828
+	text      = {235, 219, 178, 255}, // #ebdbb2
+	text_dim  = {168, 153, 132, 255}, // #a89984
+	selection = {80, 73, 69, 255}, // #504945
+	accent    = {184, 187, 38, 255}, // #b8bb26 (Green)
 }
 
 create_page :: proc(page_store: ^Page_Store) -> Page_ID {
@@ -168,7 +168,7 @@ get_page :: proc(store: ^Page_Store, id: Page_ID) -> ^Page {
 
 load_page :: proc(state: ^Global_State, page_id: Page_ID) {
 	blocks := state.store.pages[page_id].store
-	state.window.horizontal_panes[CURRENT_PANE_INDEX].blocks = blocks
+	state.window.panes[CURRENT_PANE_INDEX].blocks = blocks
 	if len(blocks.root_order) > 0 {
 		state.cursor.block_id = blocks.root_order[0]
 		state.cursor.char_offset = 0
@@ -390,7 +390,7 @@ test :: proc(page_store: ^Page_Store, state: ^Global_State) {
 }
 
 block_content_len :: proc(state: ^Global_State, block_id: Block_ID) -> int {
-	pane := state.window.horizontal_panes[CURRENT_PANE_INDEX]
+	pane := state.window.panes[CURRENT_PANE_INDEX]
 	if pane.blocks == nil {return 0}
 	block, ok := pane.blocks.blocks[block_id]
 	if !ok {return 0}
@@ -407,7 +407,7 @@ block_content_len :: proc(state: ^Global_State, block_id: Block_ID) -> int {
 
 // UP/DOWN navigate by position in root_order, not by block ID.
 move_cursor :: proc(state: ^Global_State, key: rl.KeyboardKey) {
-	pane := state.window.horizontal_panes[CURRENT_PANE_INDEX]
+	pane := state.window.panes[CURRENT_PANE_INDEX]
 	if pane.blocks == nil {return}
 	root := pane.blocks.root_order
 
@@ -449,11 +449,16 @@ move_cursor :: proc(state: ^Global_State, key: rl.KeyboardKey) {
 handle_input :: proc(state: ^Global_State) {
 	dt := rl.GetFrameTime()
 	rep := &state.cursor.key_repeat_state
-
+	// New Pane
 	if rl.IsKeyPressed(.N) && (rl.IsKeyDown(.LEFT_CONTROL) || rl.IsKeyDown(.RIGHT_CONTROL)) {
-		fmt.println("New HorizontalPane")
-		append(&state.window.horizontal_panes, HorizontalPane{})
+		fmt.println("New Pane")
+		append(&state.window.panes, Pane{})
 	}
+	if rl.IsKeyPressed(.N) && rl.IsKeyDown(.LEFT_CONTROL) && rl.IsKeyDown(.LEFT_ALT) {
+		fmt.println("New Pane")
+		append(&state.window.panes, Pane{})
+	}
+
 
 	cursor_keys := [4]rl.KeyboardKey{.LEFT, .RIGHT, .UP, .DOWN}
 	for k in cursor_keys {
@@ -466,7 +471,7 @@ handle_input :: proc(state: ^Global_State) {
 	}
 
 	if rl.IsKeyPressed(.BACKSPACE) {
-		pane := state.window.horizontal_panes[CURRENT_PANE_INDEX]
+		pane := state.window.panes[CURRENT_PANE_INDEX]
 		if pane.blocks != nil {
 			if block_ptr, ok := &pane.blocks.blocks[state.cursor.block_id]; ok {
 				if data_ptr, ok := &block_ptr.data.(BlockText); ok {
@@ -505,7 +510,7 @@ handle_input :: proc(state: ^Global_State) {
 	}
 
 	if rl.IsKeyPressed(.DELETE) {
-		pane := state.window.horizontal_panes[CURRENT_PANE_INDEX]
+		pane := state.window.panes[CURRENT_PANE_INDEX]
 		if pane.blocks != nil {
 			if block_ptr, ok := &pane.blocks.blocks[state.cursor.block_id]; ok {
 				if data_ptr, ok := &block_ptr.data.(BlockText); ok {
@@ -540,7 +545,7 @@ handle_input :: proc(state: ^Global_State) {
 	}
 
 	if rl.IsKeyPressed(.ENTER) {
-		pane := state.window.horizontal_panes[CURRENT_PANE_INDEX]
+		pane := state.window.panes[CURRENT_PANE_INDEX]
 		if pane.blocks != nil {
 			// 1. Grab and remove text after cursor from the current block
 			cut_text: string
@@ -593,7 +598,7 @@ handle_input :: proc(state: ^Global_State) {
 	for {
 		ch := rl.GetCharPressed()
 		if ch == 0 {break}
-		pane := state.window.horizontal_panes[CURRENT_PANE_INDEX]
+		pane := state.window.panes[CURRENT_PANE_INDEX]
 		if pane.blocks == nil {continue}
 		if block_ptr, ok := &pane.blocks.blocks[state.cursor.block_id]; ok {
 			if data_ptr, ok := &block_ptr.data.(BlockText); ok {
@@ -602,7 +607,6 @@ handle_input :: proc(state: ^Global_State) {
 			}
 		}
 	}
-
 
 	// drive key repeat while a cursor key is held
 	if rep.held_key != nil && rl.IsKeyDown(rep.held_key) {
@@ -627,9 +631,9 @@ render_ui :: proc(state: ^Global_State) {
 	if DEBUG do rl.DrawFPS(0, 0)
 
 	//---- Panes -----
-	horizontal_pane_len := i32(max(len(state.window.horizontal_panes), 1))
-	for horizontal_pane in state.window.horizontal_panes {
-		horizontal_pane_width := window_width / horizontal_pane_len
+	pane_count := i32(max(len(state.window.panes), 1))
+	for pane in state.window.panes {
+		pane_width := window_width / pane_count
 
 		// Pane Separator
 		rl.DrawLine(
@@ -637,15 +641,15 @@ render_ui :: proc(state: ^Global_State) {
 			0 + Default_Padding,
 			draw_pos,
 			window_height - Default_Padding,
-			rl.ColorBrightness(Gruvbox.horizontal_panel, .1),
+			rl.ColorBrightness(Gruvbox.panel, .1),
 		)
 
 		draw_pos += 1
 		draw_y: f32 = 8
 
-		if horizontal_pane.blocks != nil && len(horizontal_pane.blocks.root_order) > 0 {
-			for block_id in horizontal_pane.blocks.root_order {
-				block := horizontal_pane.blocks.blocks[block_id]
+		if pane.blocks != nil && len(pane.blocks.root_order) > 0 {
+			for block_id in pane.blocks.root_order {
+				block := pane.blocks.blocks[block_id]
 				content: string
 				switch d in block.data {
 				case BlockText:
@@ -684,7 +688,7 @@ render_ui :: proc(state: ^Global_State) {
 				draw_y += font_size + line_spacing
 			}
 		}
-		draw_pos += horizontal_pane_width
+		draw_pos += pane_width
 
 	}
 }
@@ -692,10 +696,10 @@ render_ui :: proc(state: ^Global_State) {
 main :: proc() {
 
 	window := Window_State {
-		size_x           = 1280,
-		size_y           = 720,
-		target_fps       = 60,
-		horizontal_panes = make([dynamic]HorizontalPane),
+		size_x     = 1280,
+		size_y     = 720,
+		target_fps = 60,
+		panes      = make([dynamic]Pane),
 	}
 
 	rl.SetConfigFlags({.WINDOW_RESIZABLE})
@@ -712,9 +716,9 @@ main :: proc() {
 		cursor = {key_repeat_state = {initial_delay = 0.3, repeat_delay = 0.05}},
 	}
 
-	horizontal_pane := HorizontalPane{}
-	append(&state.window.horizontal_panes, horizontal_pane)
-	CURRENT_PANE_INDEX = len(state.window.horizontal_panes) - 1
+	pane := Pane{}
+	append(&state.window.panes, pane)
+	CURRENT_PANE_INDEX = len(state.window.panes) - 1
 	test(&state.store, &state)
 
 	for !rl.WindowShouldClose() && state.running {
