@@ -1,18 +1,27 @@
 package main
 
 import "core:fmt"
+import os "core:os"
 import "core:strings"
 import rl "vendor:raylib"
-
 // Flags
 DEBUG: bool = true
 // Data Types
 Block_ID :: distinct u64
 Page_ID :: u64
 
-Default_Padding: i32 = 25
+Default_Padding: i32 = 2
 
 CURRENT_PANE_INDEX: int = 0 // index of the pane that has keyboard focus
+
+// Data Writing
+write_u8 :: proc(fd: os.Handle, v: u8) {os.write(fd, []u8{v})}
+write_u32 :: proc(fd: os.Handle, v: u32) {b := transmute([4]u8)v; os.write(fd, b[:])}
+wite_u64 :: proc(fd: os.Handle, v: u64) {b := transmute([8]u8)v; os.write(fd, b[:])}
+write_string :: proc(fd: os.Handle, s: string) {
+	write_u32(fd, u32(len(s)))
+	os.write(fd, transmute([]u8)s)
+}
 
 BlockType :: enum {
 	Text,
@@ -454,11 +463,6 @@ handle_input :: proc(state: ^Global_State) {
 		fmt.println("New Pane")
 		append(&state.window.panes, Pane{})
 	}
-	if rl.IsKeyPressed(.N) && rl.IsKeyDown(.LEFT_CONTROL) && rl.IsKeyDown(.LEFT_ALT) {
-		fmt.println("New Pane")
-		append(&state.window.panes, Pane{})
-	}
-
 
 	cursor_keys := [4]rl.KeyboardKey{.LEFT, .RIGHT, .UP, .DOWN}
 	for k in cursor_keys {
