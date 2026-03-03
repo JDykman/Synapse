@@ -6,10 +6,13 @@ import "core:strings"
 import rl "vendor:raylib"
 // Flags
 DEBUG: bool = true
+
 // Data Types
 Block_ID :: distinct u64
 Page_ID :: u64
 
+// Config
+File_Dir := "/.local/share/synapse/"
 Default_Padding: i32 = 2
 
 CURRENT_PANE_INDEX: int = 0 // index of the pane that has keyboard focus
@@ -27,7 +30,7 @@ write_string :: proc(fd: os.Handle, s: string) {
 save_page :: proc(page: ^Page) {
 	// ~ is not expanded by the OS; resolve via $HOME
 	home := os.get_env("HOME")
-	dir := strings.concatenate({home, "/.local/share/synapse"})
+	dir := strings.concatenate({home, File_Dir})
 	defer delete(dir)
 
 	if !os.is_dir_path(dir) {
@@ -258,6 +261,7 @@ init_store :: proc() -> Page_Store {
 	}
 }
 
+//// Blocks ////
 create_block :: proc(
 	store: ^BlockStore,
 	type: BlockType,
@@ -391,6 +395,22 @@ delete_block :: proc(store: ^BlockStore, block_id: Block_ID) -> bool {
 	return true
 }
 
+block_content_len :: proc(state: ^Global_State, block_id: Block_ID) -> int {
+	pane := state.window.panes[CURRENT_PANE_INDEX]
+	if pane.blocks == nil {return 0}
+	block, ok := pane.blocks.blocks[block_id]
+	if !ok {return 0}
+	switch d in block.data {
+	case BlockText:
+		return len(strings.to_string(d.content))
+	case BlockHeading:
+		return len(strings.to_string(d.content))
+	case BlockTodo:
+		return len(strings.to_string(d.content))
+	}
+	return 0
+}
+
 update_content :: proc(store: ^BlockStore, id: Block_ID, new_text: string) {
 	if block, ok := &store.blocks[id]; ok {
 
@@ -429,57 +449,32 @@ remove_id_from_array :: proc(array: ^[dynamic]Block_ID, target: Block_ID) {
 	}
 }
 
-test :: proc(page_store: ^Page_Store, state: ^Global_State) {
-	fmt.println("running Tests")
+list_page_files :: proc() -> [dynamic]string {
+	home := os.get_env("HOME")
+	dir := strings.concatenate({home, File_Dir})
 
-	test_page_id := create_page(page_store)
+	fmt.println(dir)
 
-	test_page := &page_store.pages[test_page_id]
+	fd, err := os.open(dir, os.O_RDONLY)
+	files: [dynamic]string
 
-	test_page.title = "Test Page"
+	defer delete(dir)
 
-	test_block_1 := create_block(test_page.store, BlockType.Text)
-	test_block_2 := create_block(test_page.store, BlockType.Text)
-
-	fmt.printfln("Test Page ID: %v, Title: %s", test_page_id, test_page.title)
-	fmt.println("--------------")
-
-	// Count before deletion
-	fmt.printfln("Pre-count: %d", len(test_page.store.root_order))
-
-	// Write to block 1 (Pass the STORE pointer)
-	update_content(test_page.store, test_block_1, "Helloope")
-	update_content(test_page.store, test_block_2, "Helloope Again!")
-
-	// Loop check
-	for block_id in test_page.store.root_order {
-		block := test_page.store.blocks[block_id]
-		fmt.printfln("Block_ID: %v, Content: %v", block.id, block.data)
+	if err == nil {
+		iter, err := os.read_dir(fd, -1)
+		if err == nil {
+			for f in iter {
+				append(&files, strings.clone(f.name))
+			}
+		}
+		os.file_info_slice_delete(iter)
 	}
 
-	// Load Page
-	load_page(state, test_page_id)
-
-	// Count after deletion
-	fmt.printfln("Post-count: %d", len(test_page.store.root_order))
+	return files
 }
 
-block_content_len :: proc(state: ^Global_State, block_id: Block_ID) -> int {
-	pane := state.window.panes[CURRENT_PANE_INDEX]
-	if pane.blocks == nil {return 0}
-	block, ok := pane.blocks.blocks[block_id]
-	if !ok {return 0}
-	switch d in block.data {
-	case BlockText:
-		return len(strings.to_string(d.content))
-	case BlockHeading:
-		return len(strings.to_string(d.content))
-	case BlockTodo:
-		return len(strings.to_string(d.content))
-	}
-	return 0
-}
 
+//// Input ////
 // UP/DOWN navigate by position in root_order, not by block ID.
 move_cursor :: proc(state: ^Global_State, key: rl.KeyboardKey) {
 	pane := state.window.panes[CURRENT_PANE_INDEX]
@@ -672,6 +667,23 @@ handle_input :: proc(state: ^Global_State) {
 		}
 	}
 
+	if rl.IsKeyPressed(.TAB) && (rl.IsKeyDown(.LEFT_CONTROL) || rl.IsKeyDown(.RIGHT_CONTROL)) {
+		fmt.printf("Switched Pane: %i -> ", CURRENT_PANE_INDEX)
+		if len(state.window.panes) - 1 > CURRENT_PANE_INDEX {
+			CURRENT_PANE_INDEX += 1
+		} else {
+			CURRENT_PANE_INDEX = 0
+		}
+		fmt.println(CURRENT_PANE_INDEX)
+
+		// Reset cursor to first block of the new pane
+		new_pane := state.window.panes[CURRENT_PANE_INDEX]
+		if new_pane.blocks != nil && len(new_pane.blocks.root_order) > 0 {
+			state.cursor.block_id = new_pane.blocks.root_order[0]
+			state.cursor.char_offset = 0
+		}
+	}
+
 	for {
 		ch := rl.GetCharPressed()
 		if ch == 0 {break}
@@ -695,8 +707,6 @@ handle_input :: proc(state: ^Global_State) {
 	} else {
 		rep.held_key = nil
 	}
-
-
 }
 
 render_ui :: proc(state: ^Global_State) {
@@ -771,7 +781,6 @@ render_ui :: proc(state: ^Global_State) {
 }
 
 main :: proc() {
-
 	window := Window_State {
 		size_x     = 1280,
 		size_y     = 720,
@@ -796,19 +805,8 @@ main :: proc() {
 	pane := Pane{}
 	append(&state.window.panes, pane)
 	CURRENT_PANE_INDEX = len(state.window.panes) - 1
-	test(&state.store, &state)
 
-	if DEBUG {
-		fd, err := os.open("/home/jacob/.local/share/synapse/", os.O_RDONLY)
-		if err == nil {
-			iter, err := os.read_dir(fd, 10)
-			defer delete(iter)
-			for f in iter {
-				fmt.println(f.name)
-			}
-
-		}
-	}
+	fmt.println(list_page_files())
 
 	for !rl.WindowShouldClose() && state.running {
 		handle_input(&state)
