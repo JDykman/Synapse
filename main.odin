@@ -23,6 +23,68 @@ write_string :: proc(fd: os.Handle, s: string) {
 	os.write(fd, transmute([]u8)s)
 }
 
+// File Saving
+save_page :: proc(page: ^Page) {
+	// ~ is not expanded by the OS; resolve via $HOME
+	home := os.get_env("HOME")
+	dir := strings.concatenate({home, "/.local/share/synapse"})
+	defer delete(dir)
+
+	if !os.is_dir_path(dir) {
+		if err := os.make_directory(dir); err != os.ERROR_NONE {
+			fmt.eprintln("save_page: failed to create directory:", err)
+			return
+		}
+	}
+
+	// Use page id as filename to avoid issues with special chars in titles
+	file_path := fmt.tprintf("%s/%v.syn", dir, page.id)
+	fd, err := os.open(file_path, os.O_WRONLY | os.O_CREATE | os.O_TRUNC, 0o644)
+	if err != os.ERROR_NONE {
+		fmt.eprintln("save_page: failed to open file:", err)
+		return
+	}
+	defer os.close(fd)
+
+	// Page metadata
+	wite_u64(fd, page.id)
+	write_string(fd, page.title)
+
+	// Block store metadata
+	wite_u64(fd, u64(page.store.next_id))
+
+	// Root order (preserves block sequence)
+	write_u32(fd, u32(len(page.store.root_order)))
+	for id in page.store.root_order {
+		wite_u64(fd, u64(id))
+	}
+
+	// All blocks
+	write_u32(fd, u32(len(page.store.blocks)))
+	for _, block in page.store.blocks {
+		wite_u64(fd, u64(block.id))
+		write_u8(fd, u8(block.type))
+		wite_u64(fd, u64(block.parent))
+
+		write_u32(fd, u32(len(block.children)))
+		for child_id in block.children {
+			wite_u64(fd, u64(child_id))
+		}
+
+		switch d in block.data {
+		case BlockText:
+			write_string(fd, strings.to_string(d.content))
+		case BlockHeading:
+			write_string(fd, strings.to_string(d.content))
+		case BlockTodo:
+			write_string(fd, strings.to_string(d.content))
+			write_u8(fd, 1 if d.checked else 0)
+		case:
+			write_string(fd, "")
+		}
+	}
+}
+
 BlockType :: enum {
 	Text,
 	Todo,
@@ -57,6 +119,7 @@ Block :: struct {
 	children: [dynamic]Block_ID,
 }
 
+// Page is the data/content layer — the document itself. Save this to disk.
 Page :: struct {
 	id:    Page_ID,
 	title: string,
@@ -75,10 +138,12 @@ BlockStore :: struct {
 	next_id:    Block_ID,
 }
 
+// Pane is the view/UI layer — a viewport into a Page. Save this for session restore only.
 Pane :: struct {
-	position: int,
+	page_id:  Page_ID, // which page this pane is showing
+	position: int, // scroll position
 	line_num: int,
-	blocks:   ^BlockStore,
+	blocks:   ^BlockStore, // pointer to the Page's BlockStore; pane doesn't own this data
 }
 
 // States
@@ -177,6 +242,7 @@ get_page :: proc(store: ^Page_Store, id: Page_ID) -> ^Page {
 
 load_page :: proc(state: ^Global_State, page_id: Page_ID) {
 	blocks := state.store.pages[page_id].store
+	state.window.panes[CURRENT_PANE_INDEX].page_id = page_id
 	state.window.panes[CURRENT_PANE_INDEX].blocks = blocks
 	if len(blocks.root_order) > 0 {
 		state.cursor.block_id = blocks.root_order[0]
@@ -463,7 +529,14 @@ handle_input :: proc(state: ^Global_State) {
 		fmt.println("New Pane")
 		append(&state.window.panes, Pane{})
 	}
-
+	// Save Page
+	if rl.IsKeyPressed(.S) && (rl.IsKeyDown(.LEFT_CONTROL) || rl.IsKeyDown(.RIGHT_CONTROL)) {
+		pane := state.window.panes[CURRENT_PANE_INDEX]
+		if page := get_page(&state.store, pane.page_id); page != nil {
+			save_page(page)
+			fmt.println("Saved page", pane.page_id)
+		}
+	}
 	cursor_keys := [4]rl.KeyboardKey{.LEFT, .RIGHT, .UP, .DOWN}
 	for k in cursor_keys {
 		if rl.IsKeyPressed(k) {
@@ -724,6 +797,18 @@ main :: proc() {
 	append(&state.window.panes, pane)
 	CURRENT_PANE_INDEX = len(state.window.panes) - 1
 	test(&state.store, &state)
+
+	if DEBUG {
+		fd, err := os.open("/home/jacob/.local/share/synapse/", os.O_RDONLY)
+		if err == nil {
+			iter, err := os.read_dir(fd, 10)
+			defer delete(iter)
+			for f in iter {
+				fmt.println(f.name)
+			}
+
+		}
+	}
 
 	for !rl.WindowShouldClose() && state.running {
 		handle_input(&state)
