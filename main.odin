@@ -523,6 +523,10 @@ handle_input :: proc(state: ^Global_State) {
 	if rl.IsKeyPressed(.N) && (rl.IsKeyDown(.LEFT_CONTROL) || rl.IsKeyDown(.RIGHT_CONTROL)) {
 		fmt.println("New Pane")
 		append(&state.window.panes, Pane{})
+		CURRENT_PANE_INDEX = len(state.window.panes) - 1
+		page_id := create_page(&state.store)
+		create_block(state.store.pages[page_id].store, .Text)
+		load_page(state, page_id)
 	}
 	// Save Page
 	if rl.IsKeyPressed(.S) && (rl.IsKeyDown(.LEFT_CONTROL) || rl.IsKeyDown(.RIGHT_CONTROL)) {
@@ -680,8 +684,10 @@ handle_input :: proc(state: ^Global_State) {
 		new_pane := state.window.panes[CURRENT_PANE_INDEX]
 		if new_pane.blocks != nil && len(new_pane.blocks.root_order) > 0 {
 			state.cursor.block_id = new_pane.blocks.root_order[0]
-			state.cursor.char_offset = 0
+		} else {
+			state.cursor.block_id = 0
 		}
+		state.cursor.char_offset = 0
 	}
 
 	for {
@@ -719,7 +725,7 @@ render_ui :: proc(state: ^Global_State) {
 
 	//---- Panes -----
 	pane_count := i32(max(len(state.window.panes), 1))
-	for pane in state.window.panes {
+	for pane, pane_index in state.window.panes {
 		pane_width := window_width / pane_count
 
 		// Pane Separator
@@ -760,7 +766,7 @@ render_ui :: proc(state: ^Global_State) {
 					Gruvbox.text,
 				)
 
-				if block_id == state.cursor.block_id {
+				if block_id == state.cursor.block_id && pane_index == CURRENT_PANE_INDEX {
 					offset := clamp(state.cursor.char_offset, 0, len(content))
 					// measure the prefix up to the cursor to find its x position
 					prefix := content[:offset]
@@ -802,9 +808,11 @@ main :: proc() {
 		cursor = {key_repeat_state = {initial_delay = 0.3, repeat_delay = 0.05}},
 	}
 
-	pane := Pane{}
-	append(&state.window.panes, pane)
-	CURRENT_PANE_INDEX = len(state.window.panes) - 1
+	append(&state.window.panes, Pane{})
+	CURRENT_PANE_INDEX = 0
+	page_id := create_page(&state.store)
+	create_block(state.store.pages[page_id].store, .Text)
+	load_page(&state, page_id)
 
 	fmt.println(list_page_files())
 
