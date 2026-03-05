@@ -13,7 +13,7 @@ Page_ID :: u64
 
 // Config
 File_Dir := "/.local/share/synapse/"
-Default_Padding: i32 = 2
+Default_Padding: i32 = 20
 
 CURRENT_PANE_INDEX: int = 0 // index of the pane that has keyboard focus
 
@@ -159,17 +159,24 @@ Window_State :: struct {
 }
 
 Global_State :: struct {
-	running: bool,
-	debug:   bool,
-	store:   Page_Store,
-	window:  Window_State,
-	cursor:  Cursor_State,
+	running:       bool,
+	debug:         bool,
+	store:         Page_Store,
+	window:        Window_State,
+	cursor:        Cursor_State,
+	file_selector: File_Selector_State,
 }
 
 Cursor_State :: struct {
 	key_repeat_state: Key_Repeat,
 	block_id:         Block_ID,
 	char_offset:      int,
+}
+
+File_Selector_State :: struct {
+	open:     bool,
+	files:    [dynamic]string,
+	selected: int,
 }
 
 // Fires once on press, waits initial_delay, then repeats every repeat_delay while held.
@@ -519,6 +526,25 @@ move_cursor :: proc(state: ^Global_State, key: rl.KeyboardKey) {
 handle_input :: proc(state: ^Global_State) {
 	dt := rl.GetFrameTime()
 	rep := &state.cursor.key_repeat_state
+
+	// File selector intercepts all input while open
+	if state.file_selector.open {
+		if rl.IsKeyPressed(.ESCAPE) {
+			state.file_selector.open = false
+		}
+		if rl.IsKeyPressed(.UP) && state.file_selector.selected > 0 {
+			state.file_selector.selected -= 1
+		}
+		if rl.IsKeyPressed(.DOWN) &&
+		   state.file_selector.selected < len(state.file_selector.files) - 1 {
+			state.file_selector.selected += 1
+		}
+		if rl.IsKeyPressed(.ENTER) {
+			state.file_selector.open = false
+		}
+		return
+	}
+
 	// New Pane
 	if rl.IsKeyPressed(.N) && (rl.IsKeyDown(.LEFT_CONTROL) || rl.IsKeyDown(.RIGHT_CONTROL)) {
 		fmt.println("New Pane")
@@ -535,6 +561,13 @@ handle_input :: proc(state: ^Global_State) {
 			save_page(page)
 			fmt.println("Saved page", pane.page_id)
 		}
+	}
+	// Open File Selector
+	if rl.IsKeyPressed(.O) && (rl.IsKeyDown(.LEFT_CONTROL) || rl.IsKeyDown(.RIGHT_CONTROL)) {
+		delete(state.file_selector.files)
+		state.file_selector.files = list_page_files()
+		state.file_selector.selected = 0
+		state.file_selector.open = true
 	}
 	cursor_keys := [4]rl.KeyboardKey{.LEFT, .RIGHT, .UP, .DOWN}
 	for k in cursor_keys {
@@ -715,13 +748,82 @@ handle_input :: proc(state: ^Global_State) {
 	}
 }
 
+draw_file_selector :: proc(state: ^Global_State) {
+	if !state.file_selector.open {return}
+
+	w := rl.GetScreenWidth()
+	h := rl.GetScreenHeight()
+
+	// Dim overlay
+	rl.DrawRectangle(0, 0, w, h, {0, 0, 0, 160})
+
+	// Box dimensions
+	box_w: i32 = 480
+	box_h: i32 = 360
+	box_x := (w - box_w) / 2
+	box_y := (h - box_h) / 2
+
+	rl.DrawRectangle(box_x, box_y, box_w, box_h, Gruvbox.panel)
+	rl.DrawRectangleLines(box_x, box_y, box_w, box_h, Gruvbox.accent)
+
+	// Title
+	rl.DrawTextEx(
+		state.window.font,
+		"Open File",
+		{f32(box_x + 12), f32(box_y + 10)},
+		20,
+		1,
+		Gruvbox.accent,
+	)
+	rl.DrawLine(box_x, box_y + 36, box_x + box_w, box_y + 36, Gruvbox.selection)
+
+	// File list
+	font_size: f32 = 18
+	line_h: f32 = 26
+	list_y := box_y + 44
+	padding: i32 = 12
+
+	files := state.file_selector.files
+	if len(files) == 0 {
+		rl.DrawTextEx(
+			state.window.font,
+			"No files found",
+			{f32(box_x + padding), f32(list_y)},
+			font_size,
+			1,
+			Gruvbox.text_dim,
+		)
+		return
+	}
+
+	for file, i in files {
+		item_y := f32(list_y) + f32(i) * line_h
+		if item_y + line_h > f32(box_y + box_h - 8) {break}
+
+		if i == state.file_selector.selected {
+			rl.DrawRectangle(box_x + 4, i32(item_y) - 2, box_w - 8, i32(line_h), Gruvbox.selection)
+		}
+
+		file_cstr := strings.clone_to_cstring(file, context.temp_allocator)
+		color := Gruvbox.text if i == state.file_selector.selected else Gruvbox.text_dim
+		rl.DrawTextEx(
+			state.window.font,
+			file_cstr,
+			{f32(box_x + padding), item_y},
+			font_size,
+			1,
+			color,
+		)
+	}
+}
+
 render_ui :: proc(state: ^Global_State) {
 	draw_pos: i32 = 0
 	window_height := rl.GetScreenHeight()
 	window_width := rl.GetScreenWidth()
 	font_size: f32 = 24
 	line_spacing: f32 = 4
-	if DEBUG do rl.DrawFPS(0, 0)
+	//if DEBUG do rl.DrawFPS(0, 0)
 
 	//---- Panes -----
 	pane_count := i32(max(len(state.window.panes), 1))
@@ -734,11 +836,11 @@ render_ui :: proc(state: ^Global_State) {
 			0 + Default_Padding,
 			draw_pos,
 			window_height - Default_Padding,
-			rl.ColorBrightness(Gruvbox.panel, .1),
+			Gruvbox.accent,
 		)
 
 		draw_pos += 1
-		draw_y: f32 = 8
+		draw_y: f32 = f32(Default_Padding)
 
 		if pane.blocks != nil && len(pane.blocks.root_order) > 0 {
 			for block_id in pane.blocks.root_order {
@@ -756,7 +858,7 @@ render_ui :: proc(state: ^Global_State) {
 				}
 
 				cstr := strings.clone_to_cstring(content, context.temp_allocator)
-
+				// Draw Text
 				rl.DrawTextEx(
 					state.window.font,
 					cstr,
@@ -784,6 +886,8 @@ render_ui :: proc(state: ^Global_State) {
 		draw_pos += pane_width
 
 	}
+
+	draw_file_selector(state)
 }
 
 main :: proc() {
