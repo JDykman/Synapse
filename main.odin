@@ -2,6 +2,7 @@ package main
 
 import "core:fmt"
 import os "core:os"
+import "core:path/filepath"
 import "core:strings"
 import rl "vendor:raylib"
 // Flags
@@ -26,8 +27,30 @@ write_string :: proc(fd: os.Handle, s: string) {
 	os.write(fd, transmute([]u8)s)
 }
 
+// Data Reading
+read_u8 :: proc(data: []u8, offset: ^int) -> u8 {
+	v := data[offset^]; offset^ += 1; return v
+}
+read_u32 :: proc(data: []u8, offset: ^int) -> u32 {
+	b := [4]u8{data[offset^], data[offset^+1], data[offset^+2], data[offset^+3]}
+	offset^ += 4
+	return transmute(u32)b
+}
+read_u64 :: proc(data: []u8, offset: ^int) -> u64 {
+	b := [8]u8{data[offset^],data[offset^+1],data[offset^+2],data[offset^+3],data[offset^+4],data[offset^+5],data[offset^+6],data[offset^+7]}
+	offset^ += 8
+	return transmute(u64)b
+}
+// Returns a slice into data — valid only while data is alive
+read_str :: proc(data: []u8, offset: ^int) -> string {
+	n := int(read_u32(data, offset))
+	s := string(data[offset^:offset^+n])
+	offset^ += n
+	return s
+}
+
 // File Saving
-save_page :: proc(page: ^Page) {
+save_page_to_file :: proc(page: ^Page) {
 	// ~ is not expanded by the OS; resolve via $HOME
 	home := os.get_env("HOME")
 	dir := strings.concatenate({home, File_Dir})
@@ -35,7 +58,7 @@ save_page :: proc(page: ^Page) {
 
 	if !os.is_dir_path(dir) {
 		if err := os.make_directory(dir); err != os.ERROR_NONE {
-			fmt.eprintln("save_page: failed to create directory:", err)
+			fmt.eprintln("save_page_to_file: failed to create directory:", err)
 			return
 		}
 	}
@@ -44,7 +67,7 @@ save_page :: proc(page: ^Page) {
 	file_path := fmt.tprintf("%s/%v.syn", dir, page.id)
 	fd, err := os.open(file_path, os.O_WRONLY | os.O_CREATE | os.O_TRUNC, 0o644)
 	if err != os.ERROR_NONE {
-		fmt.eprintln("save_page: failed to open file:", err)
+		fmt.eprintln("save_page_to_file: failed to open file:", err)
 		return
 	}
 	defer os.close(fd)
@@ -86,6 +109,95 @@ save_page :: proc(page: ^Page) {
 			write_string(fd, "")
 		}
 	}
+}
+
+load_page_from_file :: proc(state: ^Global_State, _filepath: string) {
+	home := os.get_env("HOME")
+	full_path := fmt.tprintf("%s%s%s", home, File_Dir, _filepath)
+
+	data, ok := os.read_entire_file(full_path, context.allocator)
+	if !ok {
+		fmt.eprintln("load_page_from_file: failed to read:", full_path)
+		return
+	}
+	defer delete(data, context.allocator)
+
+	offset := 0
+
+	// Page metadata
+	page_id := Page_ID(read_u64(data, &offset))
+	page_title := strings.clone(read_str(data, &offset))
+
+	// Block store metadata
+	next_id := Block_ID(read_u64(data, &offset))
+
+	// Root order
+	root_count := int(read_u32(data, &offset))
+	root_order := make([dynamic]Block_ID, 0, root_count)
+	for _ in 0 ..< root_count {
+		append(&root_order, Block_ID(read_u64(data, &offset)))
+	}
+
+	// Blocks
+	block_count := int(read_u32(data, &offset))
+	blocks := make(map[Block_ID]Block)
+	for _ in 0 ..< block_count {
+		block_id := Block_ID(read_u64(data, &offset))
+		block_type := BlockType(read_u8(data, &offset))
+		parent_id := Block_ID(read_u64(data, &offset))
+
+		child_count := int(read_u32(data, &offset))
+		children := make([dynamic]Block_ID, 0, child_count)
+		for _ in 0 ..< child_count {
+			append(&children, Block_ID(read_u64(data, &offset)))
+		}
+
+		content := read_str(data, &offset) // slice into data, valid before defer fires
+		block_data: BlockData
+		switch block_type {
+		case .Text:
+			b := BlockText{content = strings.builder_make()}
+			strings.write_string(&b.content, content)
+			block_data = b
+		case .Heading:
+			b := BlockHeading{content = strings.builder_make()}
+			strings.write_string(&b.content, content)
+			block_data = b
+		case .Todo:
+			checked := read_u8(data, &offset) != 0
+			b := BlockTodo{content = strings.builder_make(), checked = checked}
+			strings.write_string(&b.content, content)
+			block_data = b
+		}
+
+		blocks[block_id] = Block{
+			id       = block_id,
+			type     = block_type,
+			data     = block_data,
+			parent   = parent_id,
+			children = children,
+		}
+	}
+
+	store := new(BlockStore)
+	store.blocks = blocks
+	store.root_order = root_order
+	store.next_id = next_id
+
+	state.store.pages[page_id] = Page{id = page_id, title = page_title, store = store}
+
+	found := false
+	for id in state.store.root_order {
+		if id == page_id {found = true; break}
+	}
+	if !found {
+		append(&state.store.root_order, page_id)
+	}
+	if page_id >= state.store.next_id {
+		state.store.next_id = page_id + 1
+	}
+
+	load_page(state, page_id)
 }
 
 BlockType :: enum {
@@ -541,6 +653,11 @@ handle_input :: proc(state: ^Global_State) {
 		}
 		if rl.IsKeyPressed(.ENTER) {
 			state.file_selector.open = false
+			fmt.printfln(
+				"Selected File: %s",
+				state.file_selector.files[state.file_selector.selected],
+			)
+			load_page_from_file(state, state.file_selector.files[state.file_selector.selected])
 		}
 		return
 	}
@@ -558,7 +675,7 @@ handle_input :: proc(state: ^Global_State) {
 	if rl.IsKeyPressed(.S) && (rl.IsKeyDown(.LEFT_CONTROL) || rl.IsKeyDown(.RIGHT_CONTROL)) {
 		pane := state.window.panes[CURRENT_PANE_INDEX]
 		if page := get_page(&state.store, pane.page_id); page != nil {
-			save_page(page)
+			save_page_to_file(page)
 			fmt.println("Saved page", pane.page_id)
 		}
 	}
@@ -858,6 +975,7 @@ render_ui :: proc(state: ^Global_State) {
 				}
 
 				cstr := strings.clone_to_cstring(content, context.temp_allocator)
+
 				// Draw Text
 				rl.DrawTextEx(
 					state.window.font,
