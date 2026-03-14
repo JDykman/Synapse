@@ -246,6 +246,7 @@ save_state :: proc(state: ^Global_State) -> bool {
 	session := Session_State {
 		pane_page_ids    = pane_ids,
 		current_pane_idx = CURRENT_PANE_INDEX,
+		theme_name       = state.theme_name,
 	}
 
 	data, err := json.marshal(session)
@@ -356,6 +357,7 @@ Global_State :: struct {
 	window:        Window_State,
 	cursor:        Cursor_State,
 	file_selector: File_Selector_State,
+	theme_name:    Theme_Name,
 }
 
 Cursor_State :: struct {
@@ -373,6 +375,7 @@ File_Selector_State :: struct {
 Session_State :: struct {
 	pane_page_ids:    []Page_ID,
 	current_pane_idx: int,
+	theme_name:       Theme_Name,
 }
 
 // Fires once on press, waits initial_delay, then repeats every repeat_delay while held.
@@ -411,13 +414,73 @@ Theme :: struct {
 	accent:    rl.Color,
 }
 
+Theme_Name :: enum {
+	Gruvbox,
+	TokyoNight,
+	Catppuccin,
+	Nord,
+	Kanagawa,
+}
+
 Gruvbox :: Theme {
 	bg        = {29, 32, 33, 255}, // #1d2021
 	panel     = {40, 40, 40, 255}, // #282828
 	text      = {235, 219, 178, 255}, // #ebdbb2
 	text_dim  = {168, 153, 132, 255}, // #a89984
 	selection = {80, 73, 69, 255}, // #504945
-	accent    = {184, 187, 38, 255}, // #b8bb26 (Green)
+	accent    = {184, 187, 38, 255}, // #b8bb26
+}
+
+TokyoNight :: Theme {
+	bg        = {26, 27, 38, 255}, // #1a1b26
+	panel     = {36, 40, 59, 255}, // #24283b
+	text      = {169, 177, 214, 255}, // #a9b1d6
+	text_dim  = {86, 95, 137, 255}, // #565f89
+	selection = {40, 52, 87, 255}, // #283457
+	accent    = {122, 162, 247, 255}, // #7aa2f7
+}
+
+Catppuccin :: Theme {
+	bg        = {30, 30, 46, 255}, // #1e1e2e
+	panel     = {49, 50, 68, 255}, // #313244
+	text      = {205, 214, 244, 255}, // #cdd6f4
+	text_dim  = {108, 112, 134, 255}, // #6c7086
+	selection = {69, 71, 90, 255}, // #45475a
+	accent    = {137, 180, 250, 255}, // #89b4fa
+}
+
+Nord :: Theme {
+	bg        = {46, 52, 64, 255}, // #2e3440
+	panel     = {59, 66, 82, 255}, // #3b4252
+	text      = {216, 222, 233, 255}, // #d8dee9
+	text_dim  = {76, 86, 106, 255}, // #4c566a
+	selection = {67, 76, 94, 255}, // #434c5e
+	accent    = {129, 161, 193, 255}, // #81a1c1
+}
+
+Kanagawa :: Theme {
+	bg        = {31, 31, 40, 255}, // #1f1f28
+	panel     = {42, 42, 55, 255}, // #2a2a37
+	text      = {220, 215, 186, 255}, // #dcd7ba
+	text_dim  = {114, 113, 105, 255}, // #727169
+	selection = {45, 79, 103, 255}, // #2d4f67
+	accent    = {126, 156, 216, 255}, // #7e9cd8
+}
+
+active_theme :: proc(state: ^Global_State) -> Theme {
+	switch state.theme_name {
+	case .TokyoNight:
+		return TokyoNight
+	case .Catppuccin:
+		return Catppuccin
+	case .Nord:
+		return Nord
+	case .Kanagawa:
+		return Kanagawa
+	case .Gruvbox:
+		return Gruvbox
+	}
+	return Gruvbox
 }
 
 create_page :: proc(page_store: ^Page_Store) -> Page_ID {
@@ -770,6 +833,11 @@ handle_input :: proc(state: ^Global_State) {
 		state.file_selector.selected = 0
 		state.file_selector.open = true
 	}
+	// Cycle Theme
+	if rl.IsKeyPressed(.T) && (rl.IsKeyDown(.LEFT_CONTROL) || rl.IsKeyDown(.RIGHT_CONTROL)) {
+		state.theme_name = Theme_Name((int(state.theme_name) + 1) % len(Theme_Name))
+		fmt.println("Theme:", state.theme_name)
+	}
 	cursor_keys := [4]rl.KeyboardKey{.LEFT, .RIGHT, .UP, .DOWN}
 	for k in cursor_keys {
 		if rl.IsKeyPressed(k) {
@@ -952,6 +1020,7 @@ handle_input :: proc(state: ^Global_State) {
 draw_file_selector :: proc(state: ^Global_State) {
 	if !state.file_selector.open {return}
 
+	theme := active_theme(state)
 	w := rl.GetScreenWidth()
 	h := rl.GetScreenHeight()
 
@@ -964,8 +1033,8 @@ draw_file_selector :: proc(state: ^Global_State) {
 	box_x := (w - box_w) / 2
 	box_y := (h - box_h) / 2
 
-	rl.DrawRectangle(box_x, box_y, box_w, box_h, Gruvbox.panel)
-	rl.DrawRectangleLines(box_x, box_y, box_w, box_h, Gruvbox.accent)
+	rl.DrawRectangle(box_x, box_y, box_w, box_h, theme.panel)
+	rl.DrawRectangleLines(box_x, box_y, box_w, box_h, theme.accent)
 
 	// Title
 	rl.DrawTextEx(
@@ -974,9 +1043,9 @@ draw_file_selector :: proc(state: ^Global_State) {
 		{f32(box_x + 12), f32(box_y + 10)},
 		20,
 		1,
-		Gruvbox.accent,
+		theme.accent,
 	)
-	rl.DrawLine(box_x, box_y + 36, box_x + box_w, box_y + 36, Gruvbox.selection)
+	rl.DrawLine(box_x, box_y + 36, box_x + box_w, box_y + 36, theme.selection)
 
 	// File list
 	font_size: f32 = 18
@@ -992,7 +1061,7 @@ draw_file_selector :: proc(state: ^Global_State) {
 			{f32(box_x + padding), f32(list_y)},
 			font_size,
 			1,
-			Gruvbox.text_dim,
+			theme.text_dim,
 		)
 		return
 	}
@@ -1002,11 +1071,11 @@ draw_file_selector :: proc(state: ^Global_State) {
 		if item_y + line_h > f32(box_y + box_h - 8) {break}
 
 		if i == state.file_selector.selected {
-			rl.DrawRectangle(box_x + 4, i32(item_y) - 2, box_w - 8, i32(line_h), Gruvbox.selection)
+			rl.DrawRectangle(box_x + 4, i32(item_y) - 2, box_w - 8, i32(line_h), theme.selection)
 		}
 
 		file_cstr := strings.clone_to_cstring(file, context.temp_allocator)
-		color := Gruvbox.text if i == state.file_selector.selected else Gruvbox.text_dim
+		color := theme.text if i == state.file_selector.selected else theme.text_dim
 		rl.DrawTextEx(
 			state.window.font,
 			file_cstr,
@@ -1019,6 +1088,7 @@ draw_file_selector :: proc(state: ^Global_State) {
 }
 
 render_ui :: proc(state: ^Global_State) {
+	theme := active_theme(state)
 	draw_pos: i32 = 0
 	window_height := rl.GetScreenHeight()
 	window_width := rl.GetScreenWidth()
@@ -1037,7 +1107,7 @@ render_ui :: proc(state: ^Global_State) {
 			0 + Default_Padding,
 			draw_pos,
 			window_height - Default_Padding,
-			Gruvbox.accent,
+			theme.accent,
 		)
 
 		draw_pos += 1
@@ -1067,7 +1137,7 @@ render_ui :: proc(state: ^Global_State) {
 					{f32(draw_pos + Default_Padding), draw_y},
 					font_size,
 					1,
-					Gruvbox.text,
+					theme.text,
 				)
 
 				if block_id == state.cursor.block_id && pane_index == CURRENT_PANE_INDEX {
@@ -1080,7 +1150,7 @@ render_ui :: proc(state: ^Global_State) {
 					cursor_x := f32(draw_pos + Default_Padding) + text_size.x
 					cursor_y := draw_y
 
-					rl.DrawRectangle(i32(cursor_x), i32(cursor_y), 2, i32(font_size), Gruvbox.text)
+					rl.DrawRectangle(i32(cursor_x), i32(cursor_y), 2, i32(font_size), theme.text)
 				}
 				draw_y += font_size + line_spacing
 			}
@@ -1116,16 +1186,19 @@ main :: proc() {
 
 	session, session_ok := load_state()
 	restored := false
-	if session_ok && len(session.pane_page_ids) > 0 {
-		for page_id in session.pane_page_ids {
-			filename := fmt.tprintf("%v.syn", page_id)
-			append(&state.window.panes, Pane{})
-			CURRENT_PANE_INDEX = len(state.window.panes) - 1
-			load_page_from_file(&state, filename)
+	if session_ok {
+		state.theme_name = session.theme_name
+		if len(session.pane_page_ids) > 0 {
+			for page_id in session.pane_page_ids {
+				filename := fmt.tprintf("%v.syn", page_id)
+				append(&state.window.panes, Pane{})
+				CURRENT_PANE_INDEX = len(state.window.panes) - 1
+				load_page_from_file(&state, filename)
+			}
+			CURRENT_PANE_INDEX = clamp(session.current_pane_idx, 0, len(state.window.panes) - 1)
+			delete(session.pane_page_ids)
+			restored = true
 		}
-		CURRENT_PANE_INDEX = clamp(session.current_pane_idx, 0, len(state.window.panes) - 1)
-		delete(session.pane_page_ids)
-		restored = true
 	}
 
 	if !restored {
@@ -1141,7 +1214,7 @@ main :: proc() {
 	for !rl.WindowShouldClose() && state.running {
 		handle_input(&state)
 		rl.BeginDrawing()
-		rl.ClearBackground(Gruvbox.bg)
+		rl.ClearBackground(active_theme(&state).bg)
 		render_ui(&state)
 		rl.EndDrawing()
 		free_all(context.temp_allocator)
