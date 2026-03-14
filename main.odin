@@ -1,5 +1,6 @@
 package main
 
+import "core:encoding/json"
 import "core:fmt"
 import os "core:os"
 import "core:path/filepath"
@@ -21,7 +22,7 @@ CURRENT_PANE_INDEX: int = 0 // index of the pane that has keyboard focus
 // Data Writing
 write_u8 :: proc(fd: os.Handle, v: u8) {os.write(fd, []u8{v})}
 write_u32 :: proc(fd: os.Handle, v: u32) {b := transmute([4]u8)v; os.write(fd, b[:])}
-wite_u64 :: proc(fd: os.Handle, v: u64) {b := transmute([8]u8)v; os.write(fd, b[:])}
+write_u64 :: proc(fd: os.Handle, v: u64) {b := transmute([8]u8)v; os.write(fd, b[:])}
 write_string :: proc(fd: os.Handle, s: string) {
 	write_u32(fd, u32(len(s)))
 	os.write(fd, transmute([]u8)s)
@@ -31,27 +32,38 @@ write_string :: proc(fd: os.Handle, s: string) {
 read_u8 :: proc(data: []u8, offset: ^int) -> u8 {
 	v := data[offset^]; offset^ += 1; return v
 }
+
 read_u32 :: proc(data: []u8, offset: ^int) -> u32 {
-	b := [4]u8{data[offset^], data[offset^+1], data[offset^+2], data[offset^+3]}
+	b := [4]u8{data[offset^], data[offset^ + 1], data[offset^ + 2], data[offset^ + 3]}
 	offset^ += 4
 	return transmute(u32)b
 }
+
 read_u64 :: proc(data: []u8, offset: ^int) -> u64 {
-	b := [8]u8{data[offset^],data[offset^+1],data[offset^+2],data[offset^+3],data[offset^+4],data[offset^+5],data[offset^+6],data[offset^+7]}
+	b := [8]u8 {
+		data[offset^],
+		data[offset^ + 1],
+		data[offset^ + 2],
+		data[offset^ + 3],
+		data[offset^ + 4],
+		data[offset^ + 5],
+		data[offset^ + 6],
+		data[offset^ + 7],
+	}
 	offset^ += 8
 	return transmute(u64)b
 }
+
 // Returns a slice into data — valid only while data is alive
 read_str :: proc(data: []u8, offset: ^int) -> string {
 	n := int(read_u32(data, offset))
-	s := string(data[offset^:offset^+n])
+	s := string(data[offset^:offset^ + n])
 	offset^ += n
 	return s
 }
 
 // File Saving
 save_page_to_file :: proc(page: ^Page) {
-	// ~ is not expanded by the OS; resolve via $HOME
 	home := os.get_env("HOME")
 	dir := strings.concatenate({home, File_Dir})
 	defer delete(dir)
@@ -73,28 +85,28 @@ save_page_to_file :: proc(page: ^Page) {
 	defer os.close(fd)
 
 	// Page metadata
-	wite_u64(fd, page.id)
+	write_u64(fd, page.id)
 	write_string(fd, page.title)
 
 	// Block store metadata
-	wite_u64(fd, u64(page.store.next_id))
+	write_u64(fd, u64(page.store.next_id))
 
 	// Root order (preserves block sequence)
 	write_u32(fd, u32(len(page.store.root_order)))
 	for id in page.store.root_order {
-		wite_u64(fd, u64(id))
+		write_u64(fd, u64(id))
 	}
 
 	// All blocks
 	write_u32(fd, u32(len(page.store.blocks)))
 	for _, block in page.store.blocks {
-		wite_u64(fd, u64(block.id))
+		write_u64(fd, u64(block.id))
 		write_u8(fd, u8(block.type))
-		wite_u64(fd, u64(block.parent))
+		write_u64(fd, u64(block.parent))
 
 		write_u32(fd, u32(len(block.children)))
 		for child_id in block.children {
-			wite_u64(fd, u64(child_id))
+			write_u64(fd, u64(child_id))
 		}
 
 		switch d in block.data {
@@ -156,21 +168,28 @@ load_page_from_file :: proc(state: ^Global_State, _filepath: string) {
 		block_data: BlockData
 		switch block_type {
 		case .Text:
-			b := BlockText{content = strings.builder_make()}
+			b := BlockText {
+				content = strings.builder_make(),
+			}
 			strings.write_string(&b.content, content)
 			block_data = b
 		case .Heading:
-			b := BlockHeading{content = strings.builder_make()}
+			b := BlockHeading {
+				content = strings.builder_make(),
+			}
 			strings.write_string(&b.content, content)
 			block_data = b
 		case .Todo:
 			checked := read_u8(data, &offset) != 0
-			b := BlockTodo{content = strings.builder_make(), checked = checked}
+			b := BlockTodo {
+				content = strings.builder_make(),
+				checked = checked,
+			}
 			strings.write_string(&b.content, content)
 			block_data = b
 		}
 
-		blocks[block_id] = Block{
+		blocks[block_id] = Block {
 			id       = block_id,
 			type     = block_type,
 			data     = block_data,
@@ -184,7 +203,11 @@ load_page_from_file :: proc(state: ^Global_State, _filepath: string) {
 	store.root_order = root_order
 	store.next_id = next_id
 
-	state.store.pages[page_id] = Page{id = page_id, title = page_title, store = store}
+	state.store.pages[page_id] = Page {
+		id    = page_id,
+		title = page_title,
+		store = store,
+	}
 
 	found := false
 	for id in state.store.root_order {
@@ -198,6 +221,62 @@ load_page_from_file :: proc(state: ^Global_State, _filepath: string) {
 	}
 
 	load_page(state, page_id)
+}
+
+save_state :: proc(state: ^Global_State) -> bool {
+	home := os.get_env("HOME")
+	dir := strings.concatenate({home, File_Dir})
+	defer delete(dir)
+
+	if !os.is_dir_path(dir) {
+		if err := os.make_directory(dir); err != os.ERROR_NONE {
+			fmt.eprintln("save_state: failed to create directory:", err)
+			return false
+		}
+	}
+
+	file_path := fmt.tprintf("%sconfig.conf", dir)
+
+	pane_ids := make([]Page_ID, len(state.window.panes))
+	defer delete(pane_ids)
+	for pane, i in state.window.panes {
+		pane_ids[i] = pane.page_id
+	}
+
+	session := Session_State {
+		pane_page_ids    = pane_ids,
+		current_pane_idx = CURRENT_PANE_INDEX,
+	}
+
+	data, err := json.marshal(session)
+	if err != nil {
+		fmt.eprintln("save_state: marshal failed:", err)
+		return false
+	}
+	defer delete(data)
+
+	return os.write_entire_file(file_path, data)
+}
+
+load_state :: proc() -> (Session_State, bool) {
+	home := os.get_env("HOME")
+	dir := strings.concatenate({home, File_Dir})
+	defer delete(dir)
+
+	file_path := fmt.tprintf("%sconfig.conf", dir)
+
+	data, ok := os.read_entire_file(file_path)
+	if !ok {
+		return {}, false
+	}
+	defer delete(data)
+
+	session := Session_State{}
+	err := json.unmarshal(data, &session)
+	if err != nil {
+		return {}, false
+	}
+	return session, true
 }
 
 BlockType :: enum {
@@ -289,6 +368,11 @@ File_Selector_State :: struct {
 	open:     bool,
 	files:    [dynamic]string,
 	selected: int,
+}
+
+Session_State :: struct {
+	pane_page_ids:    []Page_ID,
+	current_pane_idx: int,
 }
 
 // Fires once on press, waits initial_delay, then repeats every repeat_delay while held.
@@ -1030,11 +1114,27 @@ main :: proc() {
 		cursor = {key_repeat_state = {initial_delay = 0.3, repeat_delay = 0.05}},
 	}
 
-	append(&state.window.panes, Pane{})
-	CURRENT_PANE_INDEX = 0
-	page_id := create_page(&state.store)
-	create_block(state.store.pages[page_id].store, .Text)
-	load_page(&state, page_id)
+	session, session_ok := load_state()
+	restored := false
+	if session_ok && len(session.pane_page_ids) > 0 {
+		for page_id in session.pane_page_ids {
+			filename := fmt.tprintf("%v.syn", page_id)
+			append(&state.window.panes, Pane{})
+			CURRENT_PANE_INDEX = len(state.window.panes) - 1
+			load_page_from_file(&state, filename)
+		}
+		CURRENT_PANE_INDEX = clamp(session.current_pane_idx, 0, len(state.window.panes) - 1)
+		delete(session.pane_page_ids)
+		restored = true
+	}
+
+	if !restored {
+		append(&state.window.panes, Pane{})
+		CURRENT_PANE_INDEX = 0
+		page_id := create_page(&state.store)
+		create_block(state.store.pages[page_id].store, .Text)
+		load_page(&state, page_id)
+	}
 
 	fmt.println(list_page_files())
 
@@ -1046,6 +1146,8 @@ main :: proc() {
 		rl.EndDrawing()
 		free_all(context.temp_allocator)
 	}
+
+	save_state(&state)
 
 	rl.CloseWindow()
 }
