@@ -3,12 +3,10 @@ package main
 import "core:encoding/json"
 import "core:fmt"
 import os "core:os"
-import "core:path/filepath"
 import "core:strings"
 import rl "vendor:raylib"
 // Flags
 DEBUG: bool = true
-
 // Data Types
 Block_ID :: distinct u64
 Page_ID :: u64
@@ -246,7 +244,7 @@ save_state :: proc(state: ^Global_State) -> bool {
 	session := Session_State {
 		pane_page_ids    = pane_ids,
 		current_pane_idx = CURRENT_PANE_INDEX,
-		theme_name       = state.theme_name,
+		theme_id         = state.theme_id,
 	}
 
 	data, err := json.marshal(session)
@@ -357,13 +355,14 @@ Global_State :: struct {
 	window:        Window_State,
 	cursor:        Cursor_State,
 	file_selector: File_Selector_State,
-	theme_name:    Theme_Name,
+	theme_id:      theme_id,
 }
 
 Cursor_State :: struct {
 	key_repeat_state: Key_Repeat,
 	block_id:         Block_ID,
 	char_offset:      int,
+	in_title:         bool,
 }
 
 File_Selector_State :: struct {
@@ -375,7 +374,7 @@ File_Selector_State :: struct {
 Session_State :: struct {
 	pane_page_ids:    []Page_ID,
 	current_pane_idx: int,
-	theme_name:       Theme_Name,
+	theme_id:         theme_id,
 }
 
 // Fires once on press, waits initial_delay, then repeats every repeat_delay while held.
@@ -414,7 +413,7 @@ Theme :: struct {
 	accent:    rl.Color,
 }
 
-Theme_Name :: enum {
+theme_id :: enum {
 	Gruvbox,
 	TokyoNight,
 	Catppuccin,
@@ -468,7 +467,7 @@ Kanagawa :: Theme {
 }
 
 active_theme :: proc(state: ^Global_State) -> Theme {
-	switch state.theme_name {
+	switch state.theme_id {
 	case .TokyoNight:
 		return TokyoNight
 	case .Catppuccin:
@@ -494,7 +493,7 @@ create_page :: proc(page_store: ^Page_Store) -> Page_ID {
 
 	page_store.pages[_id] = Page {
 		id    = _id,
-		title = "New Page",
+		title = strings.clone("New Page"),
 		store = store,
 	}
 	append(&page_store.root_order, _id)
@@ -516,6 +515,7 @@ load_page :: proc(state: ^Global_State, page_id: Page_ID) {
 	if len(blocks.root_order) > 0 {
 		state.cursor.block_id = blocks.root_order[0]
 		state.cursor.char_offset = 0
+		state.cursor.in_title = false
 	}
 }
 
@@ -747,16 +747,46 @@ move_cursor :: proc(state: ^Global_State, key: rl.KeyboardKey) {
 	if pane.blocks == nil {return}
 	root := pane.blocks.root_order
 
-	#partial switch key {
-	case .UP:
-		for id, i in root {
-			if id == state.cursor.block_id && i > 0 {
-				state.cursor.block_id = root[i - 1]
+	if state.cursor.in_title {
+		page := get_page(&state.store, pane.page_id)
+		title_len := 0 if page == nil else len(page.title)
+		#partial switch key {
+		case .DOWN:
+			if len(root) > 0 {
+				state.cursor.in_title = false
+				state.cursor.block_id = root[0]
 				state.cursor.char_offset = clamp(
 					state.cursor.char_offset,
 					0,
 					block_content_len(state, state.cursor.block_id),
 				)
+			}
+		case .LEFT:
+			state.cursor.char_offset = max(0, state.cursor.char_offset - 1)
+		case .RIGHT:
+			state.cursor.char_offset = min(title_len, state.cursor.char_offset + 1)
+		}
+		return
+	}
+
+	#partial switch key {
+	case .UP:
+		for id, i in root {
+			if id == state.cursor.block_id {
+				if i > 0 {
+					state.cursor.block_id = root[i - 1]
+					state.cursor.char_offset = clamp(
+						state.cursor.char_offset,
+						0,
+						block_content_len(state, state.cursor.block_id),
+					)
+				} else {
+					// at first block — move up into the title
+					page := get_page(&state.store, pane.page_id)
+					title_len := 0 if page == nil else len(page.title)
+					state.cursor.in_title = true
+					state.cursor.char_offset = clamp(state.cursor.char_offset, 0, title_len)
+				}
 				break
 			}
 		}
@@ -835,8 +865,8 @@ handle_input :: proc(state: ^Global_State) {
 	}
 	// Cycle Theme
 	if rl.IsKeyPressed(.T) && (rl.IsKeyDown(.LEFT_CONTROL) || rl.IsKeyDown(.RIGHT_CONTROL)) {
-		state.theme_name = Theme_Name((int(state.theme_name) + 1) % len(Theme_Name))
-		fmt.println("Theme:", state.theme_name)
+		state.theme_id = theme_id((int(state.theme_id) + 1) % len(theme_id))
+		fmt.println("Theme:", state.theme_id)
 	}
 	cursor_keys := [4]rl.KeyboardKey{.LEFT, .RIGHT, .UP, .DOWN}
 	for k in cursor_keys {
@@ -849,35 +879,49 @@ handle_input :: proc(state: ^Global_State) {
 	}
 
 	if rl.IsKeyPressed(.BACKSPACE) {
-		pane := state.window.panes[CURRENT_PANE_INDEX]
-		if pane.blocks != nil {
-			if block_ptr, ok := &pane.blocks.blocks[state.cursor.block_id]; ok {
-				if data_ptr, ok := &block_ptr.data.(BlockText); ok {
-					if state.cursor.char_offset > 0 {
-						ordered_remove(&data_ptr.content.buf, state.cursor.char_offset - 1)
-						state.cursor.char_offset -= 1
-					} else {
-						// at offset 0: merge current block's content into the previous block
-						current_index := -1
-						for id, i in pane.blocks.root_order {
-							if id == state.cursor.block_id {
-								current_index = i
-								break
+		if state.cursor.in_title {
+			pane := state.window.panes[CURRENT_PANE_INDEX]
+			if page := get_page(&state.store, pane.page_id);
+			   page != nil && state.cursor.char_offset > 0 {
+				old := page.title
+				buf := make([dynamic]u8, len(old), context.temp_allocator)
+				copy(buf[:], transmute([]u8)old)
+				ordered_remove(&buf, state.cursor.char_offset - 1)
+				delete(old)
+				page.title = strings.clone(string(buf[:]))
+				state.cursor.char_offset -= 1
+			}
+		} else {
+			pane := state.window.panes[CURRENT_PANE_INDEX]
+			if pane.blocks != nil {
+				if block_ptr, ok := &pane.blocks.blocks[state.cursor.block_id]; ok {
+					if data_ptr, ok := &block_ptr.data.(BlockText); ok {
+						if state.cursor.char_offset > 0 {
+							ordered_remove(&data_ptr.content.buf, state.cursor.char_offset - 1)
+							state.cursor.char_offset -= 1
+						} else {
+							// at offset 0: merge current block's content into the previous block
+							current_index := -1
+							for id, i in pane.blocks.root_order {
+								if id == state.cursor.block_id {
+									current_index = i
+									break
+								}
 							}
-						}
-						if current_index > 0 {
-							prev_id := pane.blocks.root_order[current_index - 1]
-							if prev_ptr, ok := &pane.blocks.blocks[prev_id]; ok {
-								if prev_data, ok := &prev_ptr.data.(BlockText); ok {
-									prev_len := len(strings.to_string(prev_data.content))
-									strings.write_string(
-										&prev_data.content,
-										strings.to_string(data_ptr.content),
-									)
-									ordered_remove(&pane.blocks.root_order, current_index)
-									delete_key(&pane.blocks.blocks, state.cursor.block_id)
-									state.cursor.block_id = prev_id
-									state.cursor.char_offset = prev_len
+							if current_index > 0 {
+								prev_id := pane.blocks.root_order[current_index - 1]
+								if prev_ptr, ok := &pane.blocks.blocks[prev_id]; ok {
+									if prev_data, ok := &prev_ptr.data.(BlockText); ok {
+										prev_len := len(strings.to_string(prev_data.content))
+										strings.write_string(
+											&prev_data.content,
+											strings.to_string(data_ptr.content),
+										)
+										ordered_remove(&pane.blocks.root_order, current_index)
+										delete_key(&pane.blocks.blocks, state.cursor.block_id)
+										state.cursor.block_id = prev_id
+										state.cursor.char_offset = prev_len
+									}
 								}
 							}
 						}
@@ -888,31 +932,45 @@ handle_input :: proc(state: ^Global_State) {
 	}
 
 	if rl.IsKeyPressed(.DELETE) {
-		pane := state.window.panes[CURRENT_PANE_INDEX]
-		if pane.blocks != nil {
-			if block_ptr, ok := &pane.blocks.blocks[state.cursor.block_id]; ok {
-				if data_ptr, ok := &block_ptr.data.(BlockText); ok {
-					if state.cursor.char_offset < len(data_ptr.content.buf) {
-						ordered_remove(&data_ptr.content.buf, state.cursor.char_offset)
-					} else {
-						// at end of block: pull next block's content into this one and remove it
-						current_index := -1
-						for id, i in pane.blocks.root_order {
-							if id == state.cursor.block_id {
-								current_index = i
-								break
+		if state.cursor.in_title {
+			pane := state.window.panes[CURRENT_PANE_INDEX]
+			if page := get_page(&state.store, pane.page_id);
+			   page != nil && state.cursor.char_offset < len(page.title) {
+				old := page.title
+				buf := make([dynamic]u8, len(old), context.temp_allocator)
+				copy(buf[:], transmute([]u8)old)
+				ordered_remove(&buf, state.cursor.char_offset)
+				delete(old)
+				page.title = strings.clone(string(buf[:]))
+			}
+		} else if true {
+			pane := state.window.panes[CURRENT_PANE_INDEX]
+			if pane.blocks != nil {
+				if block_ptr, ok := &pane.blocks.blocks[state.cursor.block_id]; ok {
+					if data_ptr, ok := &block_ptr.data.(BlockText); ok {
+						if state.cursor.char_offset < len(data_ptr.content.buf) {
+							ordered_remove(&data_ptr.content.buf, state.cursor.char_offset)
+						} else {
+							// at end of block: pull next block's content into this one and remove it
+							current_index := -1
+							for id, i in pane.blocks.root_order {
+								if id == state.cursor.block_id {
+									current_index = i
+									break
+								}
 							}
-						}
-						if current_index != -1 && current_index < len(pane.blocks.root_order) - 1 {
-							next_id := pane.blocks.root_order[current_index + 1]
-							if next_ptr, ok := &pane.blocks.blocks[next_id]; ok {
-								if next_data, ok := &next_ptr.data.(BlockText); ok {
-									strings.write_string(
-										&data_ptr.content,
-										strings.to_string(next_data.content),
-									)
-									ordered_remove(&pane.blocks.root_order, current_index + 1)
-									delete_key(&pane.blocks.blocks, next_id)
+							if current_index != -1 &&
+							   current_index < len(pane.blocks.root_order) - 1 {
+								next_id := pane.blocks.root_order[current_index + 1]
+								if next_ptr, ok := &pane.blocks.blocks[next_id]; ok {
+									if next_data, ok := &next_ptr.data.(BlockText); ok {
+										strings.write_string(
+											&data_ptr.content,
+											strings.to_string(next_data.content),
+										)
+										ordered_remove(&pane.blocks.root_order, current_index + 1)
+										delete_key(&pane.blocks.blocks, next_id)
+									}
 								}
 							}
 						}
@@ -922,7 +980,16 @@ handle_input :: proc(state: ^Global_State) {
 		}
 	}
 
-	if rl.IsKeyPressed(.ENTER) {
+	if rl.IsKeyPressed(.ENTER) && state.cursor.in_title {
+		pane := state.window.panes[CURRENT_PANE_INDEX]
+		if pane.blocks != nil && len(pane.blocks.root_order) > 0 {
+			state.cursor.in_title = false
+			state.cursor.block_id = pane.blocks.root_order[0]
+			state.cursor.char_offset = 0
+		}
+	}
+
+	if rl.IsKeyPressed(.ENTER) && !state.cursor.in_title {
 		pane := state.window.panes[CURRENT_PANE_INDEX]
 		if pane.blocks != nil {
 			// 1. Grab and remove text after cursor from the current block
@@ -995,6 +1062,19 @@ handle_input :: proc(state: ^Global_State) {
 	for {
 		ch := rl.GetCharPressed()
 		if ch == 0 {break}
+		if state.cursor.in_title {
+			pane := state.window.panes[CURRENT_PANE_INDEX]
+			if page := get_page(&state.store, pane.page_id); page != nil {
+				old := page.title
+				buf := make([dynamic]u8, len(old), context.temp_allocator)
+				copy(buf[:], transmute([]u8)old)
+				inject_at(&buf, state.cursor.char_offset, u8(ch))
+				delete(old)
+				page.title = strings.clone(string(buf[:]))
+				state.cursor.char_offset += 1
+			}
+			continue
+		}
 		pane := state.window.panes[CURRENT_PANE_INDEX]
 		if pane.blocks == nil {continue}
 		if block_ptr, ok := &pane.blocks.blocks[state.cursor.block_id]; ok {
@@ -1087,19 +1167,30 @@ draw_file_selector :: proc(state: ^Global_State) {
 	}
 }
 
+draw_border :: proc(state: ^Global_State) {
+	w := rl.GetScreenWidth()
+	h := rl.GetScreenHeight()
+	rl.DrawRectangleLines(1, 1, w - 1, h - 1, rl.Color(active_theme(state).accent))
+}
+
 render_ui :: proc(state: ^Global_State) {
 	theme := active_theme(state)
 	draw_pos: i32 = 0
 	window_height := rl.GetScreenHeight()
 	window_width := rl.GetScreenWidth()
 	font_size: f32 = 24
+	font_title_size: f32 = 48
 	line_spacing: f32 = 4
 	//if DEBUG do rl.DrawFPS(0, 0)
+
+	draw_border(state)
+
 
 	//---- Panes -----
 	pane_count := i32(max(len(state.window.panes), 1))
 	for pane, pane_index in state.window.panes {
 		pane_width := window_width / pane_count
+
 
 		// Pane Separator
 		rl.DrawLine(
@@ -1113,6 +1204,36 @@ render_ui :: proc(state: ^Global_State) {
 		draw_pos += 1
 		draw_y: f32 = f32(Default_Padding)
 
+
+		//---- Draw Title ----
+		title_text, err := strings.clone_to_cstring(state.store.pages[pane.page_id].title)
+		if err != nil {
+			cstring("New Page")
+		}
+		defer delete(title_text)
+
+		rl.DrawTextEx(
+			state.window.font,
+			title_text,
+			{f32(draw_pos + Default_Padding), draw_y},
+			font_title_size,
+			1,
+			theme.text,
+		)
+
+		if pane_index == CURRENT_PANE_INDEX && state.cursor.in_title {
+			title := state.store.pages[pane.page_id].title
+			offset := clamp(state.cursor.char_offset, 0, len(title))
+			prefix_cstr := strings.clone_to_cstring(title[:offset], context.temp_allocator)
+			text_size := rl.MeasureTextEx(state.window.font, prefix_cstr, font_title_size, 1)
+			cursor_x := f32(draw_pos + Default_Padding) + text_size.x
+			rl.DrawRectangle(i32(cursor_x), i32(draw_y), 2, i32(font_title_size), theme.text)
+		}
+
+		draw_y += font_title_size + line_spacing
+
+
+		//---- Draw Body ----
 		if pane.blocks != nil && len(pane.blocks.root_order) > 0 {
 			for block_id in pane.blocks.root_order {
 				block := pane.blocks.blocks[block_id]
@@ -1140,7 +1261,9 @@ render_ui :: proc(state: ^Global_State) {
 					theme.text,
 				)
 
-				if block_id == state.cursor.block_id && pane_index == CURRENT_PANE_INDEX {
+				if !state.cursor.in_title &&
+				   block_id == state.cursor.block_id &&
+				   pane_index == CURRENT_PANE_INDEX {
 					offset := clamp(state.cursor.char_offset, 0, len(content))
 					// measure the prefix up to the cursor to find its x position
 					prefix := content[:offset]
@@ -1187,7 +1310,7 @@ main :: proc() {
 	session, session_ok := load_state()
 	restored := false
 	if session_ok {
-		state.theme_name = session.theme_name
+		state.theme_id = session.theme_id
 		if len(session.pane_page_ids) > 0 {
 			for page_id in session.pane_page_ids {
 				filename := fmt.tprintf("%v.syn", page_id)
