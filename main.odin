@@ -2,7 +2,7 @@ package main
 
 import "core:encoding/json"
 import "core:fmt"
-import os "core:os"
+import "core:os"
 import "core:strings"
 import rl "vendor:raylib"
 // Flags
@@ -18,10 +18,10 @@ Default_Padding: i32 = 20
 CURRENT_PANE_INDEX: int = 0 // index of the pane that has keyboard focus
 
 // Data Writing
-write_u8 :: proc(fd: os.Handle, v: u8) {os.write(fd, []u8{v})}
-write_u32 :: proc(fd: os.Handle, v: u32) {b := transmute([4]u8)v; os.write(fd, b[:])}
-write_u64 :: proc(fd: os.Handle, v: u64) {b := transmute([8]u8)v; os.write(fd, b[:])}
-write_string :: proc(fd: os.Handle, s: string) {
+write_u8 :: proc(fd: ^os.File, v: u8) {os.write(fd, []u8{v})}
+write_u32 :: proc(fd: ^os.File, v: u32) {b := transmute([4]u8)v; os.write(fd, b[:])}
+write_u64 :: proc(fd: ^os.File, v: u64) {b := transmute([8]u8)v; os.write(fd, b[:])}
+write_string :: proc(fd: ^os.File, s: string) {
 	write_u32(fd, u32(len(s)))
 	os.write(fd, transmute([]u8)s)
 }
@@ -62,12 +62,12 @@ read_str :: proc(data: []u8, offset: ^int) -> string {
 
 // File Saving
 save_page_to_file :: proc(page: ^Page) {
-	home := os.get_env("HOME")
+	home := os.get_env_alloc("HOME", context.temp_allocator)
 	dir := strings.concatenate({home, File_Dir})
 	defer delete(dir)
 
-	if !os.is_dir_path(dir) {
-		if err := os.make_directory(dir); err != os.ERROR_NONE {
+	if !os.is_directory(dir) {
+		if err := os.make_directory(dir); err != nil {
 			fmt.eprintln("save_page_to_file: failed to create directory:", err)
 			return
 		}
@@ -75,8 +75,8 @@ save_page_to_file :: proc(page: ^Page) {
 
 	// Use page id as filename to avoid issues with special chars in titles
 	file_path := fmt.tprintf("%s/%v.syn", dir, page.id)
-	fd, err := os.open(file_path, os.O_WRONLY | os.O_CREATE | os.O_TRUNC, 0o644)
-	if err != os.ERROR_NONE {
+	fd, err := os.open(file_path, os.O_WRONLY | os.O_CREATE | os.O_TRUNC, os.perm_number(0o644))
+	if err != nil {
 		fmt.eprintln("save_page_to_file: failed to open file:", err)
 		return
 	}
@@ -122,11 +122,11 @@ save_page_to_file :: proc(page: ^Page) {
 }
 
 load_page_from_file :: proc(state: ^Global_State, _filepath: string) {
-	home := os.get_env("HOME")
+	home := os.get_env_alloc("HOME", context.temp_allocator)
 	full_path := fmt.tprintf("%s%s%s", home, File_Dir, _filepath)
 
-	data, ok := os.read_entire_file(full_path, context.allocator)
-	if !ok {
+	data, read_err := os.read_entire_file(full_path, context.allocator)
+	if read_err != nil {
 		fmt.eprintln("load_page_from_file: failed to read:", full_path)
 		return
 	}
@@ -222,12 +222,12 @@ load_page_from_file :: proc(state: ^Global_State, _filepath: string) {
 }
 
 save_state :: proc(state: ^Global_State) -> bool {
-	home := os.get_env("HOME")
+	home := os.get_env_alloc("HOME", context.temp_allocator)
 	dir := strings.concatenate({home, File_Dir})
 	defer delete(dir)
 
-	if !os.is_dir_path(dir) {
-		if err := os.make_directory(dir); err != os.ERROR_NONE {
+	if !os.is_directory(dir) {
+		if err := os.make_directory(dir); err != nil {
 			fmt.eprintln("save_state: failed to create directory:", err)
 			return false
 		}
@@ -254,21 +254,21 @@ save_state :: proc(state: ^Global_State) -> bool {
 	}
 	defer delete(data)
 
-	return os.write_entire_file(file_path, data)
+	return os.write_entire_file(file_path, data) == nil
 }
 
 load_state :: proc() -> (Session_State, bool) {
-	home := os.get_env("HOME")
+	home := os.get_env_alloc("HOME", context.temp_allocator)
 	dir := strings.concatenate({home, File_Dir})
 	defer delete(dir)
 
 	file_path := fmt.tprintf("%sconfig.conf", dir)
 
-	data, ok := os.read_entire_file(file_path)
-	if !ok {
+	data, err2 := os.read_entire_file(file_path, context.allocator)
+	if err2 != nil {
 		return {}, false
 	}
-	defer delete(data)
+	defer delete(data, context.allocator)
 
 	session := Session_State{}
 	err := json.unmarshal(data, &session)
@@ -716,7 +716,7 @@ remove_id_from_array :: proc(array: ^[dynamic]Block_ID, target: Block_ID) {
 }
 
 list_page_files :: proc() -> [dynamic]string {
-	home := os.get_env("HOME")
+	home := os.get_env_alloc("HOME", context.temp_allocator)
 	dir := strings.concatenate({home, File_Dir})
 
 	fmt.println(dir)
@@ -727,13 +727,14 @@ list_page_files :: proc() -> [dynamic]string {
 	defer delete(dir)
 
 	if err == nil {
-		iter, err := os.read_dir(fd, -1)
+		defer os.close(fd)
+		iter, err := os.read_dir(fd, -1, context.allocator)
 		if err == nil {
 			for f in iter {
 				append(&files, strings.clone(f.name))
 			}
 		}
-		os.file_info_slice_delete(iter)
+		os.file_info_slice_delete(iter, context.allocator)
 	}
 
 	return files
