@@ -1045,7 +1045,6 @@ handle_input :: proc(state: ^Global_State) {
 		}
 	}
 
-
 	if rl.IsKeyPressed(.TAB) {
 		if (rl.IsKeyDown(.LEFT_CONTROL) || rl.IsKeyDown(.RIGHT_CONTROL)) {
 			fmt.printf("Switched Pane: %i -> ", CURRENT_PANE_INDEX)
@@ -1076,17 +1075,19 @@ handle_input :: proc(state: ^Global_State) {
 			}
 			state.cursor.char_offset = 0
 		} else {
-			// Insert tab_spacing
-			pane := state.window.panes[CURRENT_PANE_INDEX]
-			if block_ptr, ok := &pane.blocks.blocks[state.cursor.block_id]; ok {
-				if data_ptr, ok := &block_ptr.data.(BlockText); ok {
-					for _ in 0 ..< tab_spacing {
-						inject_at(&data_ptr.content.buf, state.cursor.char_offset, " ")
-						state.cursor.char_offset += 1
+			if !state.cursor.in_title {
+				// Insert tab_spacing
+				pane := state.window.panes[CURRENT_PANE_INDEX]
+				if block_ptr, ok := &pane.blocks.blocks[state.cursor.block_id]; ok {
+					if data_ptr, ok := &block_ptr.data.(BlockText); ok {
+						for _ in 0 ..< tab_spacing {
+							inject_at(&data_ptr.content.buf, state.cursor.char_offset, " ")
+							state.cursor.char_offset += 1
+						}
 					}
 				}
-			}
 
+			}
 		}
 	}
 
