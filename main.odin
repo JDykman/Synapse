@@ -14,6 +14,7 @@ Page_ID :: u64
 // Config
 File_Dir := "/.local/share/synapse/"
 Default_Padding: i32 = 20
+tab_spacing: u8 = 3
 
 CURRENT_PANE_INDEX: int = 0 // index of the pane that has keyboard focus
 
@@ -849,6 +850,7 @@ handle_input :: proc(state: ^Global_State) {
 		create_block(state.store.pages[page_id].store, .Text)
 		load_page(state, page_id)
 	}
+
 	// Save Page
 	if rl.IsKeyPressed(.S) && (rl.IsKeyDown(.LEFT_CONTROL) || rl.IsKeyDown(.RIGHT_CONTROL)) {
 		pane := state.window.panes[CURRENT_PANE_INDEX]
@@ -857,6 +859,7 @@ handle_input :: proc(state: ^Global_State) {
 			fmt.println("Saved page", pane.page_id)
 		}
 	}
+
 	// Open File Selector
 	if rl.IsKeyPressed(.O) && (rl.IsKeyDown(.LEFT_CONTROL) || rl.IsKeyDown(.RIGHT_CONTROL)) {
 		delete(state.file_selector.files)
@@ -864,6 +867,7 @@ handle_input :: proc(state: ^Global_State) {
 		state.file_selector.selected = 0
 		state.file_selector.open = true
 	}
+
 	// Cycle Theme
 	if rl.IsKeyPressed(.T) && (rl.IsKeyDown(.LEFT_CONTROL) || rl.IsKeyDown(.RIGHT_CONTROL)) {
 		state.theme_id = theme_id((int(state.theme_id) + 1) % len(theme_id))
@@ -1041,23 +1045,49 @@ handle_input :: proc(state: ^Global_State) {
 		}
 	}
 
-	if rl.IsKeyPressed(.TAB) && (rl.IsKeyDown(.LEFT_CONTROL) || rl.IsKeyDown(.RIGHT_CONTROL)) {
-		fmt.printf("Switched Pane: %i -> ", CURRENT_PANE_INDEX)
-		if len(state.window.panes) - 1 > CURRENT_PANE_INDEX {
-			CURRENT_PANE_INDEX += 1
-		} else {
-			CURRENT_PANE_INDEX = 0
-		}
-		fmt.println(CURRENT_PANE_INDEX)
 
-		// Reset cursor to first block of the new pane
-		new_pane := state.window.panes[CURRENT_PANE_INDEX]
-		if new_pane.blocks != nil && len(new_pane.blocks.root_order) > 0 {
-			state.cursor.block_id = new_pane.blocks.root_order[0]
+	if rl.IsKeyPressed(.TAB) {
+		if (rl.IsKeyDown(.LEFT_CONTROL) || rl.IsKeyDown(.RIGHT_CONTROL)) {
+			fmt.printf("Switched Pane: %i -> ", CURRENT_PANE_INDEX)
+			if rl.IsKeyDown(.LEFT_SHIFT) {
+				// Tab back a page
+				if CURRENT_PANE_INDEX != 0 {
+					CURRENT_PANE_INDEX -= 1
+				} else {
+					CURRENT_PANE_INDEX = len(state.window.panes) - 1
+				}
+				fmt.println(CURRENT_PANE_INDEX)
+			} else {
+				// Tab to next page
+				if len(state.window.panes) - 1 > CURRENT_PANE_INDEX {
+					CURRENT_PANE_INDEX += 1
+				} else {
+					CURRENT_PANE_INDEX = 0
+				}
+				fmt.println(CURRENT_PANE_INDEX)
+			}
+
+			// Reset cursor to first block of the new pane
+			new_pane := state.window.panes[CURRENT_PANE_INDEX]
+			if new_pane.blocks != nil && len(new_pane.blocks.root_order) > 0 {
+				state.cursor.block_id = new_pane.blocks.root_order[0]
+			} else {
+				state.cursor.block_id = 0
+			}
+			state.cursor.char_offset = 0
 		} else {
-			state.cursor.block_id = 0
+			// Insert tab_spacing
+			pane := state.window.panes[CURRENT_PANE_INDEX]
+			if block_ptr, ok := &pane.blocks.blocks[state.cursor.block_id]; ok {
+				if data_ptr, ok := &block_ptr.data.(BlockText); ok {
+					for _ in 0 ..< tab_spacing {
+						inject_at(&data_ptr.content.buf, state.cursor.char_offset, " ")
+						state.cursor.char_offset += 1
+					}
+				}
+			}
+
 		}
-		state.cursor.char_offset = 0
 	}
 
 	for {
